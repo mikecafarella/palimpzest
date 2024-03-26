@@ -300,7 +300,7 @@ class Solver:
                     ], outputs=[
                         {'name': field_name, 'type': 'str', 'desc': f.desc}
                     ])
-                    codes = getConversionCodes(inputSchema, {field_name: f}, conversionDesc, config, model, api, example_inputs=inputs)
+                    codes, field_codegen_stats = getConversionCodes(inputSchema, {field_name: f}, conversionDesc, config, model, api, example_inputs=inputs)
                     answers, field_stats = list(), defaultdict(float)
                     for code in codes:
                         answer, code_stats = exec_codegen(api, code, inputs)
@@ -314,7 +314,7 @@ class Solver:
                     if config.get('codegen_logging', default=False):
                         majority_answer += " (code extracted)"
                     setattr(dr, field_name, majority_answer)
-                    stats[f"{field_name}"] = field_stats
+                    stats[f"{field_name}"] = {"conversion_stats": field_stats, "codegen_stats": field_codegen_stats}
 
                 # if profiling, set record's stats for the given op_id
                 if Profiler.profiling_on():

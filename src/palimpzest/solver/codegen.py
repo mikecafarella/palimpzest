@@ -31,9 +31,9 @@ def {api}(contents, filename):
 
 def llmCodeGen(prompt, model, default=NONE_CODE.format(api='extract')):
     try:
-        code, _ = run_codegen(prompt, model_name=model.value); return code
+        code, stats = run_codegen(prompt, model_name=model.value); return code, stats
     except Exception as e:
-        return default
+        return default, {}
 
 
 ADVICEGEN_PROMPT = """You are a helpful programming assistant and an expert Python programmer. Your job is to provide programming ideas to help me write Python programs.
@@ -75,13 +75,15 @@ def parse_ideas(text, limit=3):
 
 def llmAdviceGen(prompt, model, default=list()):
     try:
-        response, _ = run_basic_request(prompt, model_name=model.value)
-        advices = list(parse_ideas(response).values()); return advices
+        response, stats = run_basic_request(prompt, model_name=model.value)
+        advices = list(parse_ideas(response).values()); return advices, stats
     except Exception as e:
-        return default
+        return default, {}
 
-def codeGen(inputSchema: Schema, outputFieldDict: Dict[str, Field], conversionDesc: str, config: Dict[str, Any], model: Model, api: API, example_inputs: Dict[str, Any]=None):    
+def codeGen(inputSchema: Schema, outputFieldDict: Dict[str, Field], conversionDesc: str, config: Dict[str, Any], model: Model, api: API, example_inputs: Dict[str, Any]=None):
     outputName, outputField = list(outputFieldDict.items())[0]
+    codegen_stats = {}
+
     # LLM code generation
     codeGenPrompt = CODEGEN_PROMPT.format(
         api = api.args_call(),
@@ -91,8 +93,10 @@ def codeGen(inputSchema: Schema, outputFieldDict: Dict[str, Field], conversionDe
         example_inputs = "\n".join([f"- {k} = {repr(example_inputs[k])}" for k in inputSchema.fieldNames()]) if example_inputs else "",
         example_output = ""
     )
-    code = llmCodeGen(codeGenPrompt, model, default=NONE_CODE.format(api=api.name))
-    
+    code, stats = llmCodeGen(codeGenPrompt, model, default=NONE_CODE.format(api=api.name))
+    stats["code"] = code
+    codegen_stats["code_generation"] = stats
+
     # more complex code generation process
     num_ensemble        =  config.get('codegen_num_ensemble',       default=    4)
     validation          =  config.get('codegen_validation',         default=False)
@@ -111,8 +115,10 @@ def codeGen(inputSchema: Schema, outputFieldDict: Dict[str, Field], conversionDe
             example_output = "",
             n = num_advices,
         )
-        advices = llmAdviceGen(adviceGenPrompt, model)
-        for advice in advices:
+        advices, stats = llmAdviceGen(adviceGenPrompt, model)
+        stats["advices"] = advices
+        codegen_stats["advice_generation"] = stats
+        for idx, advice in enumerate(advices):
             advisedCodeGenPrompt = ADVICED_CODEGEN_PROMPT.format(
                 api = api.args_call(),
                 output = outputName,
@@ -122,9 +128,11 @@ def codeGen(inputSchema: Schema, outputFieldDict: Dict[str, Field], conversionDe
                 example_output = "",
                 advice = advice,
             )
-            advised_code = llmCodeGen(advisedCodeGenPrompt, model, default=NONE_CODE.format(api=api.name))
+            advised_code, stats = llmCodeGen(advisedCodeGenPrompt, model, default=NONE_CODE.format(api=api.name))
             codes.append(advised_code)
-    
+            stats["advice"] = advice
+            stats["advised_code"] = advised_code
+            codegen_stats[f"advised_code_generation_{idx}"] = stats
         # Validation & Iteration (there is currently not a lot of validation examples, and the reGenerate is always False, so this may never be used)
         # if validation and num_iterations > 0:
         #     validation_examples = [(example_inputs, example_output) for example_inputs, example_output in validation_examples if example_output is not None]
@@ -134,7 +142,7 @@ def codeGen(inputSchema: Schema, outputFieldDict: Dict[str, Field], conversionDe
         #         # TODO: need validation examples, probably from a forced fallback ratio to LLM (e.g., 1% ?)
         #         pass
 
-    return codes
+    return codes, codegen_stats
 
 def getConversionCodes(inputSchema: Schema, outputFieldDict: Dict[str, Field], conversionDesc: str, config: Dict[str, Any], model: Model, api: API, example_inputs: Dict[str, Any]=None):
     outputName, outputField = list(outputFieldDict.items())[0]
@@ -142,6 +150,6 @@ def getConversionCodes(inputSchema: Schema, outputFieldDict: Dict[str, Field], c
     codedir = pjoin(DataDirectory()._dir, "data", "cache", "codegen", f"{hash_key}.json")
     if ExistFile(codedir):
         return LoadJson(codedir)
-    codes = codeGen(inputSchema, outputFieldDict, conversionDesc, config, model, api, example_inputs=example_inputs)
+    codes, codegen_stats = codeGen(inputSchema, outputFieldDict, conversionDesc, config, model, api, example_inputs=example_inputs)
     SaveJson(codes, codedir)
-    return codes
+    return codes, codegen_stats

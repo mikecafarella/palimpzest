@@ -193,7 +193,7 @@ def exec_codegen(api, code, inputs, verbose=False):
     
     stats = {}
     if Profiler.profiling_on():
-        stats['api_call_duration'] = end_time - start_time
+        stats['codegen_execution_duration'] = end_time - start_time
     
     if verbose:
         print(f"Code:\n{code}\nInputs:\n{inputs}\nResult:\n{response}\n")
