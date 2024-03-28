@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 from palimpzest.tools.profiler import Profiler
-import palimpzest as pz
+from palimpzest.tools.runner import Runner
 
-from tabulate import tabulate
+import palimpzest as pz
 from PIL import Image
 
-
-from palimpzest.execution import Execution
-from palimpzest.elements import DataRecord
-
-import gradio as gr
 import numpy as np
-import pandas as pd
+import gradio as gr
 
 import argparse
 import requests
@@ -33,11 +28,6 @@ def buildSciPaperPlan(datasetId):
     """A dataset-independent declarative description of authors of good papers"""
     return pz.Dataset(datasetId, schema=ScientificPaper)
 
-def buildTestPDFPlan(datasetId):
-    """This tests whether we can process a PDF file"""
-    pdfPapers = pz.Dataset(datasetId, schema=pz.PDFFile)
-
-    return pdfPapers
 
 def buildMITBatteryPaperPlan(datasetId):
     """A dataset-independent declarative description of authors of good papers"""
@@ -55,11 +45,11 @@ class VLDBPaperListing(pz.Schema):
 
 def downloadVLDBPapers(vldbListingPageURLsId, outputDir):
     """ This function downloads a bunch of VLDB papers from an online listing and saves them to disk.  It also saves a CSV file of the paper listings."""
-    policy = pz.MaxQuality()
+    runner = Runner(pz.MaxQuality(), verbose=True)
 
     # 1. Grab the input VLDB listing page(s) and scrape them for paper metadata
     tfs = pz.Dataset(vldbListingPageURLsId, schema=pz.TextFile, desc="A file full of URLs of VLDB journal pages")
-    urls = tfs.convert(pz.URL, desc="The actual URLs of the VLDB pages", cardinality="oneToMany")  # oneToMany=True would be nice here.   
+    urls = tfs.convert(pz.URL, desc="The actual URLs of the VLDB pages", cardinality="oneToMany")   
     htmlContent = urls.map(pz.DownloadHTMLFunction())
     vldbPaperListings = htmlContent.convert(VLDBPaperListing, desc="The actual listings for each VLDB paper", cardinality="oneToMany")
 
@@ -72,23 +62,17 @@ def downloadVLDBPapers(vldbListingPageURLsId, outputDir):
         os.makedirs(outputDir)
     outputPath = os.path.join(outputDir, "vldbPaperListings.csv")
 
-    physicalTree1 = emitDataset(vldbPaperListings, policy, title="VLDB paper dump", verbose=True)
-    listingRecords = [r for r in physicalTree1]
     with open(outputPath, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=listingRecords[0].__dict__.keys())
+        writer = csv.DictWriter(csvfile, fieldnames=vldbPaperListings.schema().fieldNames())
         writer.writeheader()
-        for record in listingRecords:
+        for record in runner.execute(vldbPaperListings):
             writer.writerow(record.asDict())
 
-    physicalTree2 = emitDataset(pdfContent, policy, title="VLDB paper dump", verbose=True)
-    for idx, r in enumerate(physicalTree2):
+    for idx, r in enumerate(runner.execute(pdfContent)):
         with open(os.path.join(outputDir, str(idx) + ".pdf"), "wb") as f:
             f.write(r.content)
 
-#    For debugging
-#    physicalTree = emitDataset(vldbPaperListings, policy, title="VLDB papers", verbose=True)
-#    listingRecords = [r for r in physicalTree]
-#    printTable(listingRecords, gradio=True, plan=physicalTree)
+    runner.printTable(runner.execute(vldbPaperListings), gradio=True)
 
 
 class GitHubUpdate(pz.Schema):
@@ -127,11 +111,6 @@ def buildEnronPlan(datasetId):
     emails = pz.Dataset(datasetId, schema=Email)
     return emails
 
-def computeEnronStats(datasetId):
-    emails = pz.Dataset(datasetId, schema=Email)
-    subjectLineLengths = emails.convert(pz.Number, desc = "The number of words in the subject field")
-    return subjectLineLengths
-
 class DogImage(pz.ImageFile):
     breed = pz.Field(desc="The breed of the dog", required = True)
 
@@ -140,94 +119,6 @@ def buildImagePlan(datasetId):
     filteredImages = images.filterByStr("The image contains one or more dogs")
     dogImages = filteredImages.convert(DogImage, desc = "Images of dogs")
     return dogImages
-
-
-def buildNestedStr(node, indent=0, buildStr=""):
-        elt, child = node
-        indentation = " " * indent
-        buildStr =  f"{indentation}{elt}" if indent == 0 else buildStr + f"\n{indentation}{elt}"
-        if child is not None:
-            return buildNestedStr(child, indent=indent+2, buildStr=buildStr)
-        else:
-            return buildStr
-
-def printTable(records, cols=None, gradio=False, query=None, plan=None):
-    records = [
-        {
-            key: record.__dict__[key]
-            for key in record.__dict__
-            if not key.startswith('_')
-        }
-        for record in records
-    ]
-    records_df = pd.DataFrame(records)
-    print_cols = records_df.columns if cols is None else cols
-
-    if not gradio:
-        print(tabulate(records_df[print_cols], headers="keys", tablefmt='psql'))
-
-    else:
-        with gr.Blocks() as demo:
-            gr.Dataframe(records_df[print_cols])
-
-            if plan is not None:
-                plan_str = buildNestedStr(plan.dumpPhysicalTree())
-                gr.Textbox(value=plan_str, info="Query Plan")
-
-        demo.launch()
-
-def emitDataset(rootSet, policy, title="Dataset", verbose=False):
-    def emitNestedTuple(node, indent=0):
-        elt, child = node
-        print(" " * indent, elt)
-        if child is not None:
-            emitNestedTuple(child, indent=indent+2)
-
-    # print()
-    # print()
-    # print("# Let's test the basic functionality of the system")
-
-    # Print the syntactic tree
-    syntacticElements = rootSet.dumpSyntacticTree()
-    # print()
-    # print("Syntactic operator tree")
-    # emitNestedTuple(syntacticElements)
-
-    # Print the (possibly optimized) logical tree
-    logicalTree = rootSet.getLogicalTree()
-    logicalElements = logicalTree.dumpLogicalTree()
-
-    # print()
-    #print("Logical operator tree")
-    #emitNestedTuple(logicalElements)
-
-    # Generate candidate physical plans
-    candidatePlans = logicalTree.createPhysicalPlanCandidates()    
-
-    # print out plans to the user if it is their choice
-    if args.policy == "user":
-        print("----------")
-        for idx, cp in enumerate(candidatePlans):
-            print(f"Plan {idx}: Time est: {cp[0]:.3f} -- Cost est: {cp[1]:.3f} -- Quality est: {cp[2]:.3f}")
-            print("Physical operator tree")
-            physicalOps = cp[3].dumpPhysicalTree()
-            emitNestedTuple(physicalOps)
-            print("----------")
-
-    # have policy select the candidate plan to execute
-    planTime, planCost, quality, physicalTree = policy.choose(candidatePlans)
-    print("----------")
-    print(f"Policy is: {str(policy)}")
-    print(f"Chose plan: Time est: {planTime:.3f} -- Cost est: {planCost:.3f} -- Quality est: {quality:.3f}")
-    emitNestedTuple(physicalTree.dumpPhysicalTree())
-
-
-    #iterate over data
-    # print()
-    # print("Estimated seconds to complete:", planTime)
-    # print("Estimated USD to complete:", planCost)
-    # print("Concrete data results")
-    return physicalTree
 
 #
 # Get battery papers and emit!
@@ -269,61 +160,26 @@ if __name__ == "__main__":
     if os.getenv('OPENAI_API_KEY') is None and os.getenv('TOGETHER_API_KEY') is None:
         print("WARNING: Both OPENAI_API_KEY and TOGETHER_API_KEY are unset")
 
+    runner = Runner(policy, verbose=args.verbose)
 
     if task == "paper":
         rootSet = buildMITBatteryPaperPlan(datasetid)
-        physicalTree = emitDataset(rootSet, policy, title="Good MIT battery papers written by good authors", verbose=args.verbose)
-        records = [r for r in physicalTree]
-        print("----------")
-        print()
-        printTable(
-            records,
-            cols=["title", "publicationYear", "author", "institution", "journal", "fundingAgency"],
-            gradio=True,
-            plan=physicalTree,
-        )
+        runner.printTable(runner.execute(rootSet), gradio=True, cols=["title", "publicationYear", "author", "institution", "journal", "fundingAgency"])
 
     elif task == "enron":
         rootSet = buildEnronPlan(datasetid)
-        physicalTree = emitDataset(rootSet, policy, title="Enron emails", verbose=args.verbose)
-        records = [r for r in physicalTree]
-        print("----------")
-        print()
-        printTable(records, cols=["sender", "subject"], gradio=True, plan=physicalTree)
+        runner.printTable(runner.execute(rootSet), gradio=True, cols=["sender", "subject"])
 
     elif task == "enronoptimize":
         rootSet = buildEnronPlan(datasetid)
         execution = pz.Execution(rootSet, policy)
         physicalTree = execution.executeAndOptimize()
         records = [r for r in physicalTree]
-        print("----------")
-        print()
-        printTable(records, cols=["sender", "subject"], gradio=True, plan=physicalTree)
-
-    elif task == "enronmap":
-        rootSet = computeEnronStats(datasetid)
-        physicalTree = emitDataset(rootSet, policy, title="Enron subject counts", verbose=args.verbose)
-        records = [r for r in physicalTree]
-        print("----------")
-        print()
-        printTable(records, gradio=True, plan=physicalTree)
-
-    elif task == "pdftest":
-        rootSet = buildTestPDFPlan(datasetid)
-        physicalTree = emitDataset(rootSet, policy, title="PDF files", verbose=args.verbose)
-        records = [pz.Number() for r in enumerate(physicalTree)]
-        records = [setattr(number, 'value', idx) for idx, number in enumerate(records)]
-        print("----------")
-        print()
-        printTable(records, gradio=True, plan=physicalTree)
+        runner.printTable(records, cols=["sender", "subject"], gradio=True, plan=physicalTree)
 
     elif task == "scitest":
         rootSet = buildSciPaperPlan(datasetid)
-        physicalTree = emitDataset(rootSet, policy, title="Scientific files", verbose=args.verbose)
-        records = [r for r in physicalTree]
-        print("----------")
-        print()
-        printTable(records, cols=["title", "author", "institution", "journal", "fundingAgency"], gradio=True, plan=physicalTree)
+        runner.printTable(runner.execute(rootSet), gradio=True, cols=["title", "author", "institution", "journal", "fundingAgency"])
 
     elif task == "streaming":
         # register the ephemeral dataset
@@ -366,17 +222,21 @@ if __name__ == "__main__":
         pz.DataDirectory().registerUserSource(GitHubCommitSource(datasetid), datasetid)
 
         rootSet = testStreaming(datasetid)
-        physicalTree = emitDataset(rootSet, policy, title="Streaming items", verbose=args.verbose)
-        records = [r for r in physicalTree]
-        print("----------")
-        print()
-        printTable(records, gradio=True, plan=physicalTree)
-
+        runner.printTable(runner.execute(rootSet), gradio=True, title="Streaming items")
 
     elif task == "image":
+        def buildNestedStr(node, indent=0, buildStr=""):
+            elt, child = node
+            indentation = " " * indent
+            buildStr =  f"{indentation}{elt}" if indent == 0 else buildStr + f"\n{indentation}{elt}"
+            if child is not None:
+                return buildNestedStr(child, indent=indent+2, buildStr=buildStr)
+            else:
+                return buildStr
+
         print("Starting image task")
         rootSet = buildImagePlan(datasetid)
-        physicalTree = emitDataset(rootSet, policy, title="Dogs", verbose=args.verbose)
+        physicalTree = runner.execute(rootSet, title="Dogs")
         records = [r for r in physicalTree]
 
         print("Obtained records", records)
@@ -414,27 +274,15 @@ if __name__ == "__main__":
 
     elif task == "count":
         rootSet = testCount(datasetid)
-        physicalTree = emitDataset(rootSet, policy, title="Count records", verbose=args.verbose)
-        records = [r for r in physicalTree]
-        print("----------")
-        print()
-        printTable(records, gradio=True, plan=physicalTree)
+        runner.printTable(runner.execute(rootSet), gradio=True)
 
     elif task == "average":
         rootSet = testAverage(datasetid)
-        physicalTree = emitDataset(rootSet, policy, title="Average of numbers", verbose=args.verbose)
-        records = [r for r in physicalTree]
-        print("----------")
-        print()
-        printTable(records, gradio=True, plan=physicalTree)
+        runner.printTable(runner.execute(rootSet), gradio=True)
 
     elif task == "limit":
         rootSet = testLimit(datasetid, 5)
-        physicalTree = emitDataset(rootSet, policy, title="Limit the set to 5 items", verbose=args.verbose)
-        records = [r for r in physicalTree]
-        print("----------")
-        print()
-        printTable(records, gradio=True, plan=physicalTree)
+        runner.printTable(runner.execute(rootSet), gradio=True)
 
     else:
         print("Unknown task")

@@ -1,5 +1,5 @@
-
 from palimpzest.operators import PhysicalPlan
+from palimpzest.sets import Set
 
 from typing import List
 
@@ -14,7 +14,6 @@ class Policy:
 
     def choose(self, candidatePlans: List[PhysicalPlan]) -> PhysicalPlan:
         pass
-
 
 class MaxQuality(Policy):
     """

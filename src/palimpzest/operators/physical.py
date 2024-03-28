@@ -648,9 +648,6 @@ class FilterCandidateOp(PhysicalOp):
                 # if we're profiling, then we still need to yield candidate for the profiler to compute its stats;
                 # the profiler will check the resultRecord._passed_filter field to see if it needs to be dropped
                 #elif Profiler.profiling_on():
-                else:
-                    yield resultRecord
-
             if shouldCache:
                 self.datadir.closeCache(self.targetCacheId)
 
@@ -665,7 +662,7 @@ class FilterCandidateOp(PhysicalOp):
 
 
 class ParallelFilterCandidateOp(PhysicalOp):
-    def __init__(self, outputSchema: Schema, source: PhysicalOp, filter: Filter, model: Model, prompt_strategy: PromptStrategy=PromptStrategy.DSPY_BOOL, targetCacheId: str=None, shouldProfile=False):
+    def __init__(self, outputSchema: Schema, source: PhysicalOp, filter: Filter, model: Model, prompt_strategy: PromptStrategy=PromptStrategy.DSPY_BOOL, targetCacheId: str=None, streaming=False, shouldProfile=False):
         super().__init__(outputSchema=outputSchema, shouldProfile=shouldProfile)
         self.source = source
         self.filter = filter
@@ -783,7 +780,7 @@ class ParallelFilterCandidateOp(PhysicalOp):
 
             # Grab items from the list of inputs in chunks using self.max_workers
             for i in range(0, len(inputs), chunksize):                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:                    
                     results = list(executor.map(self._passesFilter, inputs[i:i+chunksize]))
 
                     for resultRecord in results:
@@ -795,8 +792,6 @@ class ParallelFilterCandidateOp(PhysicalOp):
                         # if we're profiling, then we still need to yield candidate for the profiler to compute its stats;
                         # the profiler will check the resultRecord._passed_filter field to see if it needs to be dropped
                         #elif Profiler.profiling_on():
-                        else:
-                            yield resultRecord
             if shouldCache:
                 self.datadir.closeCache(self.targetCacheId)
 
@@ -808,7 +803,8 @@ class ParallelFilterCandidateOp(PhysicalOp):
         if not taskDescriptor in PhysicalOp.synthesizedFns:
             raise Exception("This function should have been synthesized during init():", taskDescriptor)
 
-        return PhysicalOp.synthesizedFns[taskDescriptor](candidate)
+        result = PhysicalOp.synthesizedFns[taskDescriptor](candidate)
+        return result
 
 
 class ApplyCountAggregateOp(PhysicalOp):
