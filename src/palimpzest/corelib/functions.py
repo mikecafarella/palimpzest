@@ -37,7 +37,7 @@ class DownloadHTMLFunction(UserFunction):
     # fine for a dozen requests, but not for a million.
     def map(self, dr: DataRecord):
         textcontent = requests.get(dr.url).text
-        dr2 = DataRecord(self.outputSchema)
+        dr2 = DataRecord(self.outputSchema, parent_uuid=dr._uuid)
         dr2.url = dr.url
 
         html = textcontent
@@ -62,7 +62,7 @@ class DownloadBinaryFunction(UserFunction):
     # fine for a dozen requests, but not for a million.
     def map(self, dr: DataRecord):
         content = requests.get(dr.url).content
-        dr2 = DataRecord(self.outputSchema)
+        dr2 = DataRecord(self.outputSchema, parent_uuid=dr._uuid)
         dr2.url = dr.url
         dr2.content = content
         dr2.timestamp = datetime.datetime.now().isoformat()

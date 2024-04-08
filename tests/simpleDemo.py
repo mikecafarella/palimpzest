@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-from palimpzest.tools.profiler import Profiler
-from palimpzest.tools.runner import Runner
+from palimpzest.profiler import Profiler, StatsProcessor
+import palimpzest as pz
 
 import palimpzest as pz
 from PIL import Image
 
+
+from palimpzest.execution import Execution
+from palimpzest.elements import DataRecord, GroupBySig
+
+import gradio as gr
 import numpy as np
 import gradio as gr
 
@@ -43,7 +48,7 @@ class VLDBPaperListing(pz.Schema):
     authors = pz.Field(desc="The authors of the paper", required=True)
     pdfLink = pz.Field(desc="The link to the PDF of the paper", required=True)
 
-def downloadVLDBPapers(vldbListingPageURLsId, outputDir):
+def downloadVLDBPapers(vldbListingPageURLsId, outputDir, shouldProfile=False):
     """ This function downloads a bunch of VLDB papers from an online listing and saves them to disk.  It also saves a CSV file of the paper listings."""
     runner = Runner(pz.MaxQuality(), verbose=True)
 
@@ -62,17 +67,39 @@ def downloadVLDBPapers(vldbListingPageURLsId, outputDir):
         os.makedirs(outputDir)
     outputPath = os.path.join(outputDir, "vldbPaperListings.csv")
 
+    physicalTree1 = emitDataset(vldbPaperListings, policy, title="VLDB paper dump", verbose=True, shouldProfile=shouldProfile)
+    listingRecords = [r for r in physicalTree1]
     with open(outputPath, 'w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=vldbPaperListings.schema().fieldNames())
         writer.writeheader()
         for record in runner.execute(vldbPaperListings):
             writer.writerow(record.asDict())
 
-    for idx, r in enumerate(runner.execute(pdfContent)):
+    # if profiling was turned on; capture statistics
+    if shouldProfile:
+        profiling_data = physicalTree1.getProfilingData()
+        sp = StatsProcessor(profiling_data)
+
+        with open('profiling-data/vldb1-profiling.json', 'w') as f:
+            json.dump(sp.profiling_data.to_dict(), f)
+
+    physicalTree2 = emitDataset(pdfContent, policy, title="VLDB paper dump", verbose=True, shouldProfile=shouldProfile)
+    for idx, r in enumerate(physicalTree2):
         with open(os.path.join(outputDir, str(idx) + ".pdf"), "wb") as f:
             f.write(r.content)
 
-    runner.printTable(runner.execute(vldbPaperListings), gradio=True)
+    # if profiling was turned on; capture statistics
+    if shouldProfile:
+        profiling_data = physicalTree2.getProfilingData()
+        sp = StatsProcessor(profiling_data)
+
+        with open('profiling-data/vldb2-profiling.json', 'w') as f:
+            json.dump(sp.profiling_data.to_dict(), f)
+
+#    For debugging
+#    physicalTree = emitDataset(vldbPaperListings, policy, title="VLDB papers", verbose=True)
+#    listingRecords = [r for r in physicalTree]
+#    printTable(listingRecords, gradio=True, plan=physicalTree)
 
 
 class GitHubUpdate(pz.Schema):
@@ -111,6 +138,45 @@ def buildEnronPlan(datasetId):
     emails = pz.Dataset(datasetId, schema=Email)
     return emails
 
+def computeEnronStats(datasetId):
+    emails = pz.Dataset(datasetId, schema=Email)
+    subjectLineLengths = emails.convert(pz.Number, desc = "The number of words in the subject field")
+    return subjectLineLengths
+
+def enronGbyPlan(datasetId):
+    emails = pz.Dataset(datasetId, schema=Email)
+    ops = ["count"]
+    fields = ["sender"]
+    groupbyfields = ["sender"]
+    gbyDesc = GroupBySig(emails.schema(), groupbyfields, ops, fields)
+    groupedEmails = emails.groupby(gbyDesc)
+    return groupedEmails
+
+def enronCountPlan(datasetId):
+    emails = pz.Dataset(datasetId, schema=Email)
+    ops = ["count"]
+    fields = ["sender"]
+    groupbyfields = []
+    gbyDesc = GroupBySig(groupbyfields, ops, fields)
+    countEmails = emails.groupby(gbyDesc)
+    return countEmails
+
+def enronAverageCountPlan(datasetId):
+    emails = pz.Dataset(datasetId, schema=Email)
+    ops = ["count"]
+    fields = ["sender"]
+    groupbyfields = ["sender"]
+    gbyDesc = GroupBySig(groupbyfields, ops, fields)
+    groupedEmails = emails.groupby(gbyDesc)
+    ops = ["average"]
+    fields = ["count(sender)"]
+    groupbyfields = []
+    gbyDesc = GroupBySig(groupbyfields, ops, fields)
+    averageEmailsPerSender = groupedEmails.groupby(gbyDesc)
+
+    return averageEmailsPerSender
+
+
 class DogImage(pz.ImageFile):
     breed = pz.Field(desc="The breed of the dog", required = True)
 
@@ -120,6 +186,105 @@ def buildImagePlan(datasetId):
     dogImages = filteredImages.convert(DogImage, desc = "Images of dogs")
     return dogImages
 
+def buildImageAggPlan(datasetId):
+    images = pz.Dataset(datasetId, schema=pz.ImageFile)
+    filteredImages = images.filterByStr("The image contains one or more dogs")
+    dogImages = filteredImages.convert(DogImage, desc = "Images of dogs")
+    ops = ["count"]
+    fields = ["breed"]
+    groupbyfields = ["breed"]
+    gbyDesc = GroupBySig(dogImages, groupbyfields, ops, fields)
+    groupedDogImages = dogImages.groupby(gbyDesc)
+    return groupedDogImages
+
+
+def buildNestedStr(node, indent=0, buildStr=""):
+        elt, child = node
+        indentation = " " * indent
+        buildStr =  f"{indentation}{elt}" if indent == 0 else buildStr + f"\n{indentation}{elt}"
+        if child is not None:
+            return buildNestedStr(child, indent=indent+2, buildStr=buildStr)
+        else:
+            return buildStr
+
+def printTable(records, cols=None, gradio=False, query=None, plan=None):
+    records = [
+        {
+            key: record.__dict__[key]
+            for key in record.__dict__
+            if not key.startswith('_')
+        }
+        for record in records
+    ]
+    records_df = pd.DataFrame(records)
+    print_cols = records_df.columns if cols is None else cols
+
+    if not gradio:
+        print(tabulate(records_df[print_cols], headers="keys", tablefmt='psql'))
+
+    else:
+        with gr.Blocks() as demo:
+            gr.Dataframe(records_df[print_cols])
+
+            if plan is not None:
+                plan_str = buildNestedStr(plan.dumpPhysicalTree())
+                gr.Textbox(value=plan_str, info="Query Plan")
+
+        demo.launch()
+
+def emitDataset(rootSet, policy, title="Dataset", verbose=False, shouldProfile=False):
+    def emitNestedTuple(node, indent=0):
+        elt, child = node
+        print(" " * indent, elt)
+        if child is not None:
+            emitNestedTuple(child, indent=indent+2)
+
+    # print()
+    # print()
+    # print("# Let's test the basic functionality of the system")
+
+    # Print the syntactic tree
+    syntacticElements = rootSet.dumpSyntacticTree()
+    # print()
+    # print("Syntactic operator tree")
+    # emitNestedTuple(syntacticElements)
+
+    # Print the (possibly optimized) logical tree
+    logicalTree = rootSet.getLogicalTree()
+    logicalElements = logicalTree.dumpLogicalTree()
+
+    # print()
+    #print("Logical operator tree")
+    #emitNestedTuple(logicalElements)
+
+    # Generate candidate physical plans
+    candidatePlans = logicalTree.createPhysicalPlanCandidates(shouldProfile=shouldProfile)
+
+    # print out plans to the user if it is their choice
+    if args.policy == "user":
+        print("----------")
+        for idx, cp in enumerate(candidatePlans):
+            print(f"Plan {idx}: Time est: {cp[0]:.3f} -- Cost est: {cp[1]:.3f} -- Quality est: {cp[2]:.3f}")
+            print("Physical operator tree")
+            physicalOps = cp[3].dumpPhysicalTree()
+            emitNestedTuple(physicalOps)
+            print("----------")
+
+    # have policy select the candidate plan to execute
+    planTime, planCost, quality, physicalTree = policy.choose(candidatePlans)
+    print("----------")
+    print(f"Policy is: {str(policy)}")
+    print(f"Chose plan: Time est: {planTime:.3f} -- Cost est: {planCost:.3f} -- Quality est: {quality:.3f}")
+    emitNestedTuple(physicalTree.dumpPhysicalTree())
+
+
+    #iterate over data
+    # print()
+    # print("Estimated seconds to complete:", planTime)
+    # print("Estimated USD to complete:", planCost)
+    # print("Concrete data results")
+    return physicalTree
+
 #
 # Get battery papers and emit!
 #
@@ -128,6 +293,7 @@ if __name__ == "__main__":
     startTime = time.time()
     parser = argparse.ArgumentParser(description='Run a simple demo')
     parser.add_argument('--verbose', default=False, action='store_true', help='Print verbose output')
+    parser.add_argument('--profile', default=False, action='store_true', help='Profile execution')
     parser.add_argument('--datasetid', type=str, help='The dataset id')
     parser.add_argument('--task' , type=str, help='The task to run')
     parser.add_argument('--policy', type=str, help="One of 'user', 'mincost', 'mintime', 'maxquality', 'harmonicmean'")
@@ -141,6 +307,10 @@ if __name__ == "__main__":
     if args.task is None:
         print("Please provide a task")
         exit(1)
+
+    # create directory for profiling data
+    if args.profile:
+        os.makedirs("profiling-data", exist_ok=True)
 
     datasetid = args.datasetid
     task = args.task
@@ -164,22 +334,129 @@ if __name__ == "__main__":
 
     if task == "paper":
         rootSet = buildMITBatteryPaperPlan(datasetid)
-        runner.printTable(runner.execute(rootSet), gradio=True, cols=["title", "publicationYear", "author", "institution", "journal", "fundingAgency"])
+        physicalTree = emitDataset(rootSet, policy, title="Good MIT battery papers written by good authors", verbose=args.verbose, shouldProfile=args.profile)
+        records = [r for r in physicalTree]
+        print("----------")
+        print()
+        printTable(
+            records,
+            cols=["title", "publicationYear", "author", "institution", "journal", "fundingAgency"],
+            gradio=True,
+            plan=physicalTree,
+        )
+
+        # if profiling was turned on; capture statistics
+        if args.profile:
+            profiling_data = physicalTree.getProfilingData()
+            sp = StatsProcessor(profiling_data)
+
+            with open('profiling-data/paper-profiling.json', 'w') as f:
+                json.dump(sp.profiling_data.to_dict(), f)
 
     elif task == "enron":
         rootSet = buildEnronPlan(datasetid)
-        runner.printTable(runner.execute(rootSet), gradio=True, cols=["sender", "subject"])
+        physicalTree = emitDataset(rootSet, policy, title="Enron emails", verbose=args.verbose, shouldProfile=args.profile)
+        records = [r for r in physicalTree]
+        print("----------")
+        print()
+        printTable(records, cols=["sender", "subject"], gradio=True, plan=physicalTree)
+    elif task == "enronGby":
+        rootSet = enronGbyPlan(datasetid)
+        physicalTree = emitDataset(rootSet, policy, title="Enron email counts", verbose=args.verbose)
+        records = [r for r in physicalTree]
+        print("----------")
+        print()
+        printTable(records, cols=["sender", "count(sender)"], gradio=True, plan=physicalTree)
+    elif task == "enronCount":
+        rootSet = enronCountPlan(datasetid)
+        physicalTree = emitDataset(rootSet, policy, title="Enron email counts", verbose=args.verbose)
+        records = [r for r in physicalTree]
+        print("----------")
+        print()
+        printTable(records, cols=["count(sender)"], gradio=True, plan=physicalTree)
+    elif task == "enronAvgCount":
+        rootSet = enronAverageCountPlan(datasetid)
+        physicalTree = emitDataset(rootSet, policy, title="Enron email counts", verbose=args.verbose)
+        records = [r for r in physicalTree]
+        print("----------")
+        print()
+        printTable(records, cols=["average(count(sender))"], gradio=True, plan=physicalTree)
+
+
+
+        # if profiling was turned on; capture statistics
+        if args.profile:
+            profiling_data = physicalTree.getProfilingData()
+            sp = StatsProcessor(profiling_data)
+
+            with open('profiling-data/e-profiling.json', 'w') as f:
+                json.dump(sp.profiling_data.to_dict(), f)
 
     elif task == "enronoptimize":
         rootSet = buildEnronPlan(datasetid)
         execution = pz.Execution(rootSet, policy)
-        physicalTree = execution.executeAndOptimize()
+        physicalTree = execution.executeAndOptimize(verbose=args.verbose, shouldProfile=args.profile)
         records = [r for r in physicalTree]
-        runner.printTable(records, cols=["sender", "subject"], gradio=True, plan=physicalTree)
+        print("----------")
+        print()
+        printTable(records, cols=["sender", "subject"], gradio=True, plan=physicalTree)
+
+        # if profiling was turned on; capture statistics
+        if args.profile:
+            profiling_data = physicalTree.getProfilingData()
+            sp = StatsProcessor(profiling_data)
+
+            with open('profiling-data/eo-profiling.json', 'w') as f:
+                json.dump(sp.profiling_data.to_dict(), f)
+
+    elif task == "enronmap":
+        rootSet = computeEnronStats(datasetid)
+        physicalTree = emitDataset(rootSet, policy, title="Enron subject counts", verbose=args.verbose, shouldProfile=args.profile)
+        records = [r for r in physicalTree]
+        print("----------")
+        print()
+        printTable(records, gradio=True, plan=physicalTree)
+
+        # if profiling was turned on; capture statistics
+        if args.profile:
+            profiling_data = physicalTree.getProfilingData()
+            sp = StatsProcessor(profiling_data)
+
+            with open('profiling-data/emap-profiling.json', 'w') as f:
+                json.dump(sp.profiling_data.to_dict(), f)
+
+    elif task == "pdftest":
+        rootSet = buildTestPDFPlan(datasetid)
+        physicalTree = emitDataset(rootSet, policy, title="PDF files", verbose=args.verbose, shouldProfile=args.profile)
+        records = [pz.Number() for r in enumerate(physicalTree)]
+        records = [setattr(number, 'value', idx) for idx, number in enumerate(records)]
+        print("----------")
+        print()
+        printTable(records, gradio=True, plan=physicalTree)
+
+        # if profiling was turned on; capture statistics
+        if args.profile:
+            profiling_data = physicalTree.getProfilingData()
+            sp = StatsProcessor(profiling_data)
+
+            with open('profiling-data/pdftest-profiling.json', 'w') as f:
+                json.dump(sp.profiling_data.to_dict(), f)
 
     elif task == "scitest":
         rootSet = buildSciPaperPlan(datasetid)
-        runner.printTable(runner.execute(rootSet), gradio=True, cols=["title", "author", "institution", "journal", "fundingAgency"])
+        physicalTree = emitDataset(rootSet, policy, title="Scientific files", verbose=args.verbose, shouldProfile=args.profile)
+        records = [r for r in physicalTree]
+        print("----------")
+        print()
+        printTable(records, cols=["title", "author", "institution", "journal", "fundingAgency"], gradio=True, plan=physicalTree)
+
+        # if profiling was turned on; capture statistics
+        if args.profile:
+            profiling_data = physicalTree.getProfilingData()
+            sp = StatsProcessor(profiling_data)
+
+            with open('profiling-data/scitest-profiling.json', 'w') as f:
+                json.dump(sp.profiling_data.to_dict(), f)
 
     elif task == "streaming":
         # register the ephemeral dataset
@@ -222,7 +499,26 @@ if __name__ == "__main__":
         pz.DataDirectory().registerUserSource(GitHubCommitSource(datasetid), datasetid)
 
         rootSet = testStreaming(datasetid)
-        runner.printTable(runner.execute(rootSet), gradio=True, title="Streaming items")
+        physicalTree = emitDataset(rootSet, policy, title="Streaming items", verbose=args.verbose, shouldProfile=args.profile)
+        records = [r for r in physicalTree]
+        print("----------")
+        print()
+        printTable(records, gradio=True, plan=physicalTree)
+
+        # if profiling was turned on; capture statistics
+        if args.profile:
+            profiling_data = physicalTree.getProfilingData()
+            sp = StatsProcessor(profiling_data)
+
+            with open('profiling-data/streaming-profiling.json', 'w') as f:
+                json.dump(sp.profiling_data.to_dict(), f)
+
+    elif task =="gbyImage":
+        # TODO: integrate w/profiling
+        rootSet = buildImageAggPlan(datasetid)
+        physicalTree = emitDataset(rootSet, policy, title="Dogs", verbose=args.verbose)
+        for r in physicalTree:
+            print(r)
 
     elif task == "image":
         def buildNestedStr(node, indent=0, buildStr=""):
@@ -236,7 +532,7 @@ if __name__ == "__main__":
 
         print("Starting image task")
         rootSet = buildImagePlan(datasetid)
-        physicalTree = runner.execute(rootSet, title="Dogs")
+        physicalTree = emitDataset(rootSet, policy, title="Dogs", verbose=args.verbose, shouldProfile=args.profile)
         records = [r for r in physicalTree]
 
         print("Obtained records", records)
@@ -263,26 +559,63 @@ if __name__ == "__main__":
         demo.launch()
 
         # if profiling was turned on; capture statistics
-        if Profiler.profiling_on():
+        if args.profile:
             profiling_data = physicalTree.getProfilingData()
+            sp = StatsProcessor(profiling_data)
 
-            with open('profiling.json', 'w') as f:
-                json.dump(profiling_data, f)
+            with open('profiling-data/image-profiling.json', 'w') as f:
+                json.dump(sp.profiling_data.to_dict(), f)
 
     elif task == "vldb":
-        downloadVLDBPapers(datasetid, "vldbPapers")
+        downloadVLDBPapers(datasetid, "vldbPapers", shouldProfile=args.profile)
 
     elif task == "count":
         rootSet = testCount(datasetid)
-        runner.printTable(runner.execute(rootSet), gradio=True)
+        physicalTree = emitDataset(rootSet, policy, title="Count records", verbose=args.verbose, shouldProfile=args.profile)
+        records = [r for r in physicalTree]
+        print("----------")
+        print()
+        printTable(records, gradio=True, plan=physicalTree)
+
+        # if profiling was turned on; capture statistics
+        if args.profile:
+            profiling_data = physicalTree.getProfilingData()
+            sp = StatsProcessor(profiling_data)
+
+            with open('profiling-data/count-profiling.json', 'w') as f:
+                json.dump(sp.profiling_data.to_dict(), f)
 
     elif task == "average":
         rootSet = testAverage(datasetid)
-        runner.printTable(runner.execute(rootSet), gradio=True)
+        physicalTree = emitDataset(rootSet, policy, title="Average of numbers", verbose=args.verbose, shouldProfile=args.profile)
+        records = [r for r in physicalTree]
+        print("----------")
+        print()
+        printTable(records, gradio=True, plan=physicalTree)
+
+        # if profiling was turned on; capture statistics
+        if args.profile:
+            profiling_data = physicalTree.getProfilingData()
+            sp = StatsProcessor(profiling_data)
+
+            with open('profiling-data/avg-profiling.json', 'w') as f:
+                json.dump(sp.profiling_data.to_dict(), f)
 
     elif task == "limit":
         rootSet = testLimit(datasetid, 5)
-        runner.printTable(runner.execute(rootSet), gradio=True)
+        physicalTree = emitDataset(rootSet, policy, title="Limit the set to 5 items", verbose=args.verbose, shouldProfile=args.profile)
+        records = [r for r in physicalTree]
+        print("----------")
+        print()
+        printTable(records, gradio=True, plan=physicalTree)
+
+        # if profiling was turned on; capture statistics
+        if args.profile:
+            profiling_data = physicalTree.getProfilingData()
+            sp = StatsProcessor(profiling_data)
+
+            with open('profiling-data/limit-profiling.json', 'w') as f:
+                json.dump(sp.profiling_data.to_dict(), f)
 
     else:
         print("Unknown task")

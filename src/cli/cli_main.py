@@ -221,7 +221,7 @@ def print_config() -> None:
 
 @cli.command(aliases=["cc"])
 @click.option("--name", type=str, default=None, required=True, help="Name of the config to create.")
-@click.option("--llmservice", type=click.Choice(['openai', 'together'], case_sensitive=False), default="openai", help="Name of the LLM service to use.")
+@click.option("--llmservice", type=click.Choice(['openai', 'together', 'google'], case_sensitive=False), default="openai", help="Name of the LLM service to use.")
 @click.option("--parallel", type=bool, default=False, help="Whether to run operations in parallel or not.")
 @click.option("--set", type=bool, is_flag=True, help="Set the created config to be the current config.")
 def create_config(name: str, llmservice: str, parallel: bool, set: bool) -> None:

@@ -3,9 +3,10 @@
 #####################################################
 # Description: This file contains the functions that are from ASKEM skema tools at endpoints:
 # https://api.askem.lum.ai/docs
+from palimpzest.profiler import ApiStats
 import base64
-import json
 import requests
+import time
 
 
 def equations_to_latex(image_content):
@@ -13,13 +14,15 @@ def equations_to_latex(image_content):
     files = {
       "data": image_content,
     }
+    start_time = time.time()
     r = requests.post(url, files=files)
-    return r.text
+    return r.text, ApiStats(api_call_duration_secs=time.time() - start_time)
 
 def equations_to_latex_base64(image_content):
     url = "https://api.askem.lum.ai/workflows/images/base64/equations-to-latex"
+    start_time = time.time()
     r = requests.post(url, data=image_content)
-    return r.text
+    return r.text, ApiStats(api_call_duration_secs=time.time() - start_time)
 
 
 if __name__ == "__main__":

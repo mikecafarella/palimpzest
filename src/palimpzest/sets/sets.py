@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from palimpzest.datamanager import DataDirectory
-from palimpzest.elements import AggregateFunction, File, Filter, Number, Schema, UserFunction
+from palimpzest.elements import AggregateFunction, File, Filter, Number, Schema, UserFunction, GroupBySig
 from palimpzest.operators import (
     ApplyAggregateFunction,
     ApplyUserFunction,
@@ -11,6 +11,7 @@ from palimpzest.operators import (
     FilteredScan,
     LimitScan,
     LogicalOperator,
+    GroupByAggregate
 )
 from palimpzest.datasources import DataSource, DirectorySource, FileSource, MemorySource
 
@@ -48,6 +49,7 @@ class Set:
                  desc: str=None, 
                  filter: Filter=None, 
                  aggFunc: AggregateFunction=None, 
+                 groupBy: GroupBySig = None,
                  limit: int=None, 
                  fnid:str = None, 
                  cardinality: str = None,
@@ -57,6 +59,7 @@ class Set:
         self._desc = desc
         self._filter = filter
         self._aggFunc = aggFunc
+        self._groupBy = groupBy
         self._limit = limit
         self._fnid = fnid
         self._cardinality = cardinality
@@ -74,7 +77,8 @@ class Set:
              "aggFunc": None if self._aggFunc is None else self._aggFunc.serialize(),
              "fnid": None if self._fnid is None else self._fnid,
              "cardinality": None if self._cardinality is None else self._cardinality,
-             "limit": self._limit}
+             "limit": self._limit,
+             "groupBy": None if self._groupBy is None else GroupBySig.serialize(self._groupBy)}
 
         return d
 
@@ -104,6 +108,12 @@ class Set:
         aggFuncStr = inputObj.get("aggFunc", None)
         aggFunc = None if aggFuncStr is None else AggregateFunction.deserialize(aggFuncStr)
 
+        # deserialize agg. function
+        groupByStr = inputObj.get("groupBy", None)
+        groupBy = None if groupByStr is None else GroupBySig.deserialize(groupByStr)
+
+
+
         # deserialize limit
         limitStr = inputObj.get("limit", None)
         limit = None if limitStr is None else int(limitStr)
@@ -118,7 +128,8 @@ class Set:
                    aggFunc=aggFunc,
                    fnid=fnid,
                    cardinality=cardinality,
-                   limit=limit)
+                   limit=limit,
+                   groupBy=groupBy)
 
     def universalIdentifier(self):
         """Return a unique identifier for this Set."""
@@ -162,6 +173,8 @@ class Set:
         # if the Set's source is another Set, apply the appropriate scan to the Set
         if self._filter is not None:
             return FilteredScan(self._schema, self._source.getLogicalTree(), self._filter, targetCacheId=uid)
+        elif self._groupBy is not None:
+            return GroupByAggregate(self._schema, self._source.getLogicalTree(), self._groupBy, targetCacheId=uid)
         elif self._aggFunc is not None:
             return ApplyAggregateFunction(self._schema, self._source.getLogicalTree(), self._aggFunc, targetCacheId=uid)
         elif self._limit is not None:
@@ -193,7 +206,7 @@ class Dataset(Set):
     provide a Schema for the Dataset. This Schema will be enforced when the Dataset iterates
     over the source in its __iter__ method and constructs DataRecords.
     """
-    def __init__(self, source: Union[str, Set], schema: Schema=File, cardinality: str = None, desc: str=None, filter: Filter=None, aggFunc: AggregateFunction=None, limit: int=None, fnid: str=None, nocache: bool=False):
+    def __init__(self, source: Union[str, Set], schema: Schema=File, cardinality: str = None, desc: str=None, filter: Filter=None, groupBy: GroupBySig=None, aggFunc: AggregateFunction=None, limit: int=None, fnid: str=None, nocache: bool=False):
         # convert source (str) -> source (DataSource) if need be
         self.source = (
             DataDirectory().getRegisteredDataset(source)
@@ -201,7 +214,7 @@ class Dataset(Set):
             else source
         )
 
-        super().__init__(schema, self.source, cardinality=cardinality, desc=desc, filter=filter, aggFunc=aggFunc, limit=limit, fnid=fnid, nocache=nocache)
+        super().__init__(schema, self.source, cardinality=cardinality, desc=desc, filter=filter, aggFunc=aggFunc, groupBy=groupBy, limit=limit, fnid=fnid, nocache=nocache)
 
     def deserialize(inputObj):
         # TODO: this deserialize operation will not work; I need to finish the deserialize impl. for Schema
@@ -248,6 +261,9 @@ class Dataset(Set):
         """Apply an aggregate function to this set"""
         return Dataset(source=self, schema=Number, desc="Aggregate results", aggFunc=AggregateFunction(aggFuncDesc))
     
+    def groupby(self, groupBy: GroupBySig) -> Dataset:
+        return Dataset(source=self, schema=groupBy.outputSchema(), desc="Group By", groupBy=groupBy)
+
     def limit(self, n: int) -> Dataset:
         """Limit the set size to no more than n rows"""
         return Dataset(source=self, schema=self.schema(), desc="LIMIT " + str(n), limit=n)

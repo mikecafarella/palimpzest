@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
+import context # needed to load api keys from .env
 from palimpzest.elements import Schema, StringField
 from palimpzest.policy import *
-from palimpzest.tools.profiler import Profiler
+from palimpzest.profiler import Profiler
 
 from tabulate import tabulate
 
@@ -10,6 +11,7 @@ import palimpzest as pz
 import pandas as pd
 
 import json
+import os
 import time
 
 
@@ -54,6 +56,10 @@ if __name__ == "__main__":
     """
     This demo illustrates how the cost optimizer can produce and evaluate multiple plans.
     """
+    # create directory for profiling data
+    if Profiler.profiling_on():
+        os.makedirs("profiling-data", exist_ok=True)
+
     startTime = time.time()
 
     # user implemented plan
@@ -67,7 +73,7 @@ if __name__ == "__main__":
     t2 = time.time()
 
     # get candidate physical plans
-    candidatePlans = logicalTree.createPhysicalPlanCandidates()
+    candidatePlans = logicalTree.createPhysicalPlanCandidates(shouldProfile=True)
     t3 = time.time()
     print(f"Create Plan: {t1 - startTime:.3f}")
     print(f"Get Logical Tree: {t2 - t1:.3f}")
@@ -110,7 +116,7 @@ if __name__ == "__main__":
     if Profiler.profiling_on():
         profiling_data = physicalTree.getProfilingData()
 
-        with open('profiling.json', 'w') as f:
+        with open('profiling-data/new-demo-profiling.json', 'w') as f:
             json.dump(profiling_data, f)
 
     endTime = time.time()

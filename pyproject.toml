@@ -12,8 +12,10 @@ dependencies = [
     "charset-normalizer>=3.3.2",
     "click>=8.1.7",
     "click-aliases>=1.0.4",
-    "dspy-ai>=2.1.9",
+    # updated dspy to make it work with Google Gemini
+    "dspy-ai>=2.4.1", # not available on pypi, install from source
     "fastapi~=0.100.0",
+    "google-generativeai==0.4.1",
     "gradio>=4.20.1",
     "grobid-client-python==0.0.5",
     "layoutparser>=0.3.4",
@@ -64,7 +66,7 @@ namespaces = false
 
 [build-system]
 requires = ["setuptools"]
-build-backed = "setuptools.build_meta"
+build-backend = "setuptools.build_meta"
 
 [project.urls]
 homepage = "https://github.com/mikecafarella/Palimpzest"

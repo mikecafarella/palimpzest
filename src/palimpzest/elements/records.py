@@ -1,33 +1,25 @@
 from palimpzest.elements import Schema
-from palimpzest.tools.profiler import Profiler
 
 import json
+import uuid
 
+# DEFINITIONS
+MAX_UUID_CHARS = 10
 
 class DataRecord:
     """A DataRecord is a single record of data matching some Schema."""
-    def __init__(self, schema: Schema, shouldProfile=False):
+    def __init__(self, schema: Schema, parent_uuid=None):
+        # schema for the data record
         self._schema = schema
 
-        # if profiling is set to True, collect execution statistics and history of transformations
-        self._shouldProfile = shouldProfile
-        #if self._shouldProfile:
-            # self._stats is a dictionary mapping a physical opId --> a stats dictionary
-            # for the LLM operation(s) performed during that physical operation (if applicable);
-            # the self._stats dictionary is updated in solver.py as the physical operation is performed;
-            # some timing statistics will also be computed inside of profiler.py when the DataRecord
-            # is intercepted before being passed on to the next operation.
-        self._stats = {}
-        self._state = {}
+        # unique identifier for the record
+        self._uuid = str(uuid.uuid4())[:MAX_UUID_CHARS]
+        self._parent_uuid = parent_uuid
 
-            # TODO: if we want to preserve entire lineage / history **within** each record, we'll
-            #       need to modify solver.py (and datasources.py?) to set self._state; I don't love
-            #       this approach b/c it requires updating code in many disparate places to properly
-            #       manage the _state updates. The nice thing about the current way we handle the
-            #       lineage / history computation is that it is entirely confined to profiler.py.
-            #
-            # self._state is a dictionary mapping a physical opId --> its serialized state
-            # at the end of each physical operation; this dict is updated in profiler.py
+        # attribute which may collect profiling stats pertaining to a record;
+        # keys will the the ID of the operation which generated the stats and the
+        # values will be Stats objects
+        self._stats = {}
 
     def __setattr__(self, key, value):
         if not key.startswith("_") and not hasattr(self._schema, key):
@@ -35,27 +27,34 @@ class DataRecord:
 
         super().__setattr__(key, value)
 
+
+
+    def __getitem__(self, key):
+        return super().__getattr__(key)
+
     @property
     def schema(self):
         return self._schema
 
-    def asTextJSON(self, serialize: bool=False):
+    def asTextJSON(self):
         """Return a JSON representation of this DataRecord"""
         keys = sorted(self.__dict__)
         # Make a dictionary out of the key/value pairs
         d = {k: str(self.__dict__[k]) for k in keys if not k.startswith("_") and not isinstance(self.__dict__[k] , bytes)}
         d["data type"] = str(self._schema.__name__)
         d["data type description"]  = str(self._schema.__doc__)
-        if serialize and self._shouldProfile:
-            return d
 
         return json.dumps(d, indent=2)
     
-    def asDict(self):
+    def asDict(self, include_bytes: bool=True):
         """Return a dictionary representation of this DataRecord"""
         keys = sorted(self.__dict__)
         # Make a dictionary out of the key/value pairs
-        d = {k: self.__dict__[k] for k in keys if not k.startswith("_")}
+        d = (
+            {k: self.__dict__[k] for k in keys if not k.startswith("_")}
+            if include_bytes
+            else {k: self.__dict__[k] if not isinstance(self.__dict__[k] , bytes) else "<bytes>" for k in keys if not k.startswith("_")}
+        )
         return d
 
     def asJSON(self):

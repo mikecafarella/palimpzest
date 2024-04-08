@@ -1,3 +1,7 @@
+.env
+build/*
+.vscode/*
+
 # python artifacts
 *.egg-info
 **/__pycache__/

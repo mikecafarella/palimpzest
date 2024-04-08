@@ -15,8 +15,8 @@ from palimpzest.operators import (
     ParallelFilterCandidateOp,
     ParallelInduceFromCandidateOp,
     PhysicalOp,
+    ApplyGroupByOp
 )
-from palimpzest.sampler import Sampler
 
 from copy import deepcopy
 from itertools import permutations
@@ -24,7 +24,6 @@ from typing import List, Tuple
 
 import os
 import random
-import time
 
 # DEFINITIONS
 PhysicalPlan = Tuple[float, float, float, PhysicalOp]
@@ -155,6 +154,12 @@ class LogicalOperator:
         if os.getenv('TOGETHER_API_KEY') is not None:
             models.extend([Model.MIXTRAL])
 
+        # TODO: uncomment once dspy pushes v2.4.1 to PyPI
+        # if os.getenv('GOOGLE_API_KEY') is not None:
+        #     models.extend([Model.GEMINI_1])
+
+        assert len(models) > 0, "No models available to create physical plans! You must set at least one of the following environment variables: [OPENAI_API_KEY, TOGETHER_API_KEY, GOOGLE_API_KEY]"
+
         physicalPlans = []
         for model in models:
             physicalPlan = self._getPhysicalTree(strategy=PhysicalOp.LOCAL_PLAN, model=model, shouldProfile=shouldProfile)
@@ -162,14 +167,10 @@ class LogicalOperator:
 
         return physicalPlans
 
-    def createPhysicalPlanCandidates(self, sampler: Sampler=None, shouldProfile: bool=False) -> List[PhysicalPlan]:
+    def createPhysicalPlanCandidates(self, cost_estimate_sample_data: List[Dict[str, Any]]=None, shouldProfile: bool=False) -> List[PhysicalPlan]:
         """Return a set of physical trees of operators."""
-        start_time = time.time()
-
         # create set of logical plans (e.g. consider different filter/join orderings)
         logicalPlans = self._createLogicalPlans()
-        t_logical = time.time()
-        # print(f"Time to create logical plans: {t_logical - start_time:.2f}")
 
         # iterate through logical plans and evaluate multiple physical plans
         physicalPlans = [
@@ -177,22 +178,17 @@ class LogicalOperator:
             for logicalPlan in logicalPlans
             for physicalPlan in logicalPlan._createPhysicalPlans(shouldProfile=shouldProfile)
         ]
-        t_physical = time.time()
-        # print(f"Time to create physical plans: {t_physical - t_logical:.2f}")
 
         # estimate the cost (in terms of USD, latency, throughput, etc.) for each plan
         plans = []
         for physicalPlan in physicalPlans:
-            planCost = physicalPlan.estimateCost()
+            planCost = physicalPlan.estimateCost(cost_estimate_sample_data=cost_estimate_sample_data)
 
             totalTime = planCost["totalTime"]
             totalCost = planCost["totalUSD"]  # for now, cost == USD
             quality = planCost["quality"]
 
             plans.append((totalTime, totalCost, quality, physicalPlan))
-
-        t_cost = time.time()
-        # print(f"Time to est. plan cost(s): {t_cost - t_physical:.2f}")
 
         # drop duplicate plans in terms of time, cost, and quality, as these can cause
         # plans on the pareto frontier to be dropped if they are "dominated" by a duplicate
@@ -228,9 +224,6 @@ class LogicalOperator:
             # add plan i to pareto frontier if it's not dominated
             if paretoFrontier:
                 paretoFrontierPlans.append((totalTime_i, totalCost_i, quality_i, plan))
-
-        t_pareto = time.time()
-        # print(f"Time to compute pareto frontier: {t_pareto - t_cost:.2f}")
 
         return paretoFrontierPlans
 
@@ -385,6 +378,27 @@ class FilteredScan(LogicalOperator):
             return ParallelFilterCandidateOp(self.outputSchema, self.inputOp._getPhysicalTree(strategy=strategy, model=model, shouldProfile=shouldProfile), self.filter, model=model, targetCacheId=self.targetCacheId, shouldProfile=shouldProfile)
         else:
             return FilterCandidateOp(self.outputSchema, self.inputOp._getPhysicalTree(strategy=strategy, model=model, shouldProfile=shouldProfile), self.filter, model=model, targetCacheId=self.targetCacheId, shouldProfile=shouldProfile)
+
+
+class GroupByAggregate(LogicalOperator):
+    def __init__(self, outputSchema: Schema, inputOp: LogicalOperator, gbySig: elements.GroupBySig, targetCacheId: str=None):
+        super().__init__(outputSchema, inputOp.outputSchema)
+        (valid, error) = gbySig.validateSchema(inputOp.outputSchema)
+        if (not valid):
+            raise TypeError(error)
+        self.inputOp = inputOp 
+        self.gbySig = gbySig
+        self.targetCacheId = targetCacheId
+    def __str__(self):
+        descStr = "Grouping Fields:" 
+        return (f"GroupBy({elements.GroupBySig.serialize(self.gbySig)})")
+    
+    def dumpLogicalTree(self):
+        """Return the logical subtree rooted at this operator"""
+        return (self, self.inputOp.dumpLogicalTree())
+
+    def _getPhysicalTree(self, strategy: str=None, model: Model=None, shouldProfile: bool=False):
+        return ApplyGroupByOp(self.inputOp._getPhysicalTree(strategy=strategy, model=model, shouldProfile=shouldProfile), self.gbySig, targetCacheId=self.targetCacheId, shouldProfile=shouldProfile)
 
 
 class ApplyAggregateFunction(LogicalOperator):

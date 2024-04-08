@@ -217,7 +217,6 @@ class DataDirectory(metaclass=DataDirectorySingletonMeta):
         """Return a cached result."""
         if not cacheId in self._cache:
             return None
-
         cachedResult = pickle.load(open(self._cache[cacheId], "rb"))
         def iterateOverCachedResult():
             for x in cachedResult:
@@ -251,7 +250,11 @@ class DataDirectory(metaclass=DataDirectorySingletonMeta):
     def closeCache(self, cacheId):
         """Close the cache."""
         filename = self._dir + "/data/cache/" + cacheId + ".cached"
-        pickle.dump(self._tempCache[cacheId], open(filename, "wb"))
+        try:
+            pickle.dump(self._tempCache[cacheId], open(filename, "wb"))
+        except pickle.PicklingError:
+            print("Warning: Failed to save cache due to pickling error")
+            os.remove(filename)
         del self._tempCache[cacheId]
         self._cache[cacheId] = filename
 

@@ -205,6 +205,10 @@ class Any(Schema):
     def children(self) -> List[Schema]:
         return self._possibleSchemas
 
+class OperatorDerivedSchema(Schema):
+    """Schema defined by an operator, e.g., a join or a group by"""
+
+
 class File(Schema):
     """
     A File is defined by two Fields:
