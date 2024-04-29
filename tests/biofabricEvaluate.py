@@ -382,6 +382,7 @@ def plot_runtime_cost_vs_quality(results, result_dir):
         # add annotations
         if text is not None:
             ha, va = 'right', 'top'
+            continue
             if text == "MIXTRAL-GPT-4":
                 va = 'bottom'
             elif text in ["GEMINI-GPT-4","GEMINI-GPT-3.5"]:
@@ -420,7 +421,7 @@ def plot_runtime_cost_vs_quality(results, result_dir):
     axs[0].grid(True)
     axs[1].grid(True)
     # axs[0].legend(bbox_to_anchor=(1.03, 1.0))
-    fig.savefig(f"{result_dir}/biofabric.png", bbox_inches="tight")
+    fig.savefig(f"{result_dir}/biofabric.png", bbox_inches="tight", dpi=600)
 
 
 
