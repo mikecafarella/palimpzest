@@ -3,9 +3,9 @@ import numpy as np
 from palimpzest.constants import PromptStrategy, QueryStrategy
 from palimpzest.elements import DataRecord, File, TextFile, Schema
 from palimpzest.corelib import EquationImage, ImageFile, PDFFile, Download, XLSFile, Table
-from palimpzest.generators import DSPyGenerator
+from palimpzest.generators import DSPyGenerator, RegularGeneratorDSPyText
 from palimpzest.profiler import ApiStats, FilterLLMStats, FilterNonLLMStats, InduceLLMStats, InduceNonLLMStats
-from palimpzest.solver.query_strategies import runBondedQuery, runConventionalQuery, runCodeGenQuery
+from palimpzest.solver.query_strategies import runBondedQuery, runConventionalQuery, runCodeGenQuery, _construct_query_prompt
 from palimpzest.solver.task_descriptors import TaskDescriptor
 from palimpzest.tools.pdfparser import get_text_from_pdf
 from palimpzest.tools.skema_tools import equations_to_latex
@@ -270,7 +270,6 @@ class Solver:
                 # if profiling, set record's stats for the given op_id
                 if shouldProfile:
                     for dr in drs:
-                        # TODO: conventional doesn't capture stats for one-to-many cardinality
                         dr._stats[td.op_id] = InduceLLMStats(
                             query_strategy=td.query_strategy.value,
                             token_budget=td.token_budget,
@@ -314,7 +313,6 @@ class Solver:
                 # if profiling, set record's stats for the given op_id
                 if shouldProfile:
                     for dr in drs:
-                        # TODO: conventional doesn't capture stats for one-to-many cardinality
                         dr._stats[td.op_id] = InduceLLMStats(
                             query_strategy=td.query_strategy.value,
                             token_budget=td.token_budget,
@@ -365,7 +363,8 @@ class Solver:
             # create generator
             generator = None
             if td.prompt_strategy == PromptStrategy.DSPY_COT_BOOL:
-                generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, self._verbose)
+                # generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, self._verbose)
+                generator = RegularGeneratorDSPyText(td.model.value, td.prompt_strategy, doc_schema, doc_type, self._verbose)
             # TODO
             elif td.prompt_strategy == PromptStrategy.ZERO_SHOT:
                 raise Exception("not implemented yet")
@@ -379,7 +378,9 @@ class Solver:
             # invoke LLM to generate filter decision (True or False)
             text_content = candidate.asJSON(include_bytes=False)
             try:
-                response, gen_stats = generator.generate(context=text_content, question=td.filter.filterCondition)
+                promptQuestion = _construct_query_prompt(td, doc_schema, doc_type, [], context=text_content, wrap_prompt_in_dspy_text=True, filterQuestion=td.filter.filterCondition)
+                # response, gen_stats = generator.generate(context=text_content, question=td.filter.filterCondition)
+                response, gen_stats = generator.generate(prompt=promptQuestion)
 
                 # if profiling, set record's stats for the given op_id
                 if shouldProfile:

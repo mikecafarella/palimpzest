@@ -1,7 +1,7 @@
 from palimpzest.datamanager import DataDirectory
 from palimpzest.constants import PromptStrategy, CodeGenStrategy
 from palimpzest.elements import DataRecord
-from palimpzest.generators import DSPyGenerator, ImageTextGenerator
+from palimpzest.generators import DSPyGenerator, ImageTextGenerator, RegularGeneratorDSPyText
 from palimpzest.profiler import Stats, BondedQueryStats, ConventionalQueryStats, FieldQueryStats, CodeGenEnsembleStats, FullCodeGenStats, GenerationStats
 from palimpzest.solver.task_descriptors import TaskDescriptor
 from palimpzest.utils import API, codeEnsembleGeneration, codeEnsembleExecution, reGenerationCondition, CodeGenSingleStats
@@ -12,8 +12,28 @@ import base64
 import json
 import re
 
+DSPY_PREFIX = """
+Answer question(s) about a Email(contents, filename, sender, subject).
 
-def _construct_query_prompt(td: TaskDescriptor, doc_type: str, generate_field_names: List[str], is_conventional: bool=False) -> str:
+---
+
+Follow the following format.
+
+Context: contains full text of the Email
+
+Question: one or more question about the Email
+
+Reasoning: Let's think step by step in order to ${produce the answer}. We ...
+
+Answer: print the answer only, separated by a newline character
+
+---
+
+Context:
+"""
+
+
+def _construct_query_prompt(td: TaskDescriptor, doc_schema: str, doc_type: str, generate_field_names: List[str], is_conventional: bool=False, context: str=None, wrap_prompt_in_dspy_text: bool=False, filterQuestion: str=None) -> str:
     """
     This function constructs the prompt for a bonded query.
     """
@@ -72,9 +92,58 @@ def _construct_query_prompt(td: TaskDescriptor, doc_type: str, generate_field_na
         {appendixInstruction}
         """ + "" if td.conversionDesc is None else f" Keep in mind that this process is described by this text: {td.conversionDesc}."
 
-    # TODO: add this for boolean questions?
-    # if td.prompt_strategy == PromptStrategy.DSPY_COT_BOOL:
-    #     promptQuestion += "\nRemember, your output MUST be one of TRUE or FALSE."
+    # TODO: implement w/its own PromptStrategy
+    # for the evaluation -- to ensure we aren't caching any responses -- simulate DSPY signature
+    # by wrapping promptQuestion in DSPy context
+    if wrap_prompt_in_dspy_text and td.prompt_strategy != PromptStrategy.DSPY_COT_BOOL:
+        produce_the_answer = "${produce the answer}"
+        promptQuestion = f"""Answer question(s) about a {doc_schema}.
+
+        ---
+
+        Follow the following format.
+
+        Context: contains full text of the {doc_type}
+
+        Question: one or more question about the {doc_type}
+
+        Reasoning: Let's think step by step in order to {produce_the_answer}. We ...
+
+        Answer: print the answer only, separated by a newline character
+
+        ---
+
+        Context:\n{context}
+
+        Question: {promptQuestion}
+
+        Reasoning: Let's think step by step in order to
+        """
+
+    elif wrap_prompt_in_dspy_text and td.prompt_strategy == PromptStrategy.DSPY_COT_BOOL:
+        produce_the_answer = "${produce the answer}"
+        promptQuestion = f"""Answer condition questions about a {doc_schema}.
+
+        ---
+
+        Follow the following format.
+
+        Context: contains full text of the {doc_type}
+
+        Question: one or more conditions about the Email {doc_type}
+
+        Reasoning: Let's think step by step in order to {produce_the_answer}. We ...
+
+        Answer: often a TRUE/FALSE answer to the condition question(s) about the Email
+
+        ---
+
+        Context:\n{context}
+
+        Question: {filterQuestion}
+
+        Reasoning: Let's think step by step in order to
+        """
 
     return promptQuestion
 
@@ -152,15 +221,18 @@ def runBondedQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fals
     doc_type = td.outputSchema.className()
 
     # construct prompt question
-    promptQuestion = _construct_query_prompt(td, doc_type, generate_field_names)
+    wrap_prompt_in_dspy_text = (td.prompt_strategy == PromptStrategy.DSPY_COT_QA)
+    promptQuestion = _construct_query_prompt(td, doc_schema, doc_type, generate_field_names, context=text_content, wrap_prompt_in_dspy_text=wrap_prompt_in_dspy_text)
 
     # generate LLM response and capture statistics
     answer, bonded_query_stats = None, None
     try:
         if td.prompt_strategy == PromptStrategy.DSPY_COT_QA:
             # invoke LLM to generate output JSON
-            generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
-            answer, gen_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+            # generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+            generator = RegularGeneratorDSPyText(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+            # answer, gen_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+            answer, gen_stats = generator.generate(promptQuestion, budget=td.token_budget)
 
             # construct BondedQueryStats object
             bonded_query_stats = BondedQueryStats(
@@ -255,8 +327,7 @@ def runConventionalQuery(candidate: DataRecord, td: TaskDescriptor, verbose: boo
             # TODO Hacky to nest return and not disrupt the rest of method!!!
             # NOTE: this is a bonded query, but we are treating it as a conventional query
             query_stats = {}
-            drs = [] 
-            promptQuestion = _construct_query_prompt(td, doc_type, generate_field_names)
+            drs = []
 
             # iterate over the length of the split attribute, and generate a new JSON for each split
             for idx in range(n_splits):
@@ -266,10 +337,13 @@ def runConventionalQuery(candidate: DataRecord, td: TaskDescriptor, verbose: boo
                 new_json[split_attribute] = dct[split_attribute][idx]
 
                 text_content = json.dumps(new_json)
-                generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+                promptQuestion = _construct_query_prompt(td, doc_schema, doc_type, generate_field_names, context=text_content, wrap_prompt_in_dspy_text=True)
+                # generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+                generator = RegularGeneratorDSPyText(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
                 answer, record_stats = None, None
                 try:
-                    answer, record_stats = generator.generate(text_content, promptQuestion)
+                    # answer, record_stats = generator.generate(text_content, promptQuestion)
+                    answer, record_stats = generator.generate(promptQuestion)
                     jsonObj = _get_JSON_from_answer(answer)["items"][0]
                     query_stats[f"all_fields_one_to_many_conventional_{idx}"] = record_stats
                 except IndexError as e:
@@ -309,7 +383,8 @@ def runConventionalQuery(candidate: DataRecord, td: TaskDescriptor, verbose: boo
     query_stats = {}
     for field_name in generate_field_names:
         # construct prompt question
-        promptQuestion = _construct_query_prompt(td, doc_type, [field_name])
+        wrap_prompt_in_dspy_text = (td.prompt_strategy == PromptStrategy.DSPY_COT_QA)
+        promptQuestion = _construct_query_prompt(td, doc_schema, doc_type, [field_name], context=text_content, wrap_prompt_in_dspy_text=wrap_prompt_in_dspy_text)
         field_stats = None
         try:
             field_stats = None
@@ -317,8 +392,10 @@ def runConventionalQuery(candidate: DataRecord, td: TaskDescriptor, verbose: boo
                 # print(f"FALL BACK FIELD: {field_name}")
                 # print("---------------")
                 # invoke LLM to generate output JSON
-                generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
-                answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+                # generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+                generator = RegularGeneratorDSPyText(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+                # answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+                answer, field_stats = generator.generate(promptQuestion, budget=td.token_budget)
 
             elif td.prompt_strategy == PromptStrategy.IMAGE_TO_TEXT:                               
                 # TODO: this is very hacky; need to come up w/more general solution for multimodal schemas
@@ -444,15 +521,17 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
                     # construct prompt question
                     doc_schema = str(td.outputSchema)
                     doc_type = td.outputSchema.className()
-                    promptQuestion = _construct_query_prompt(td, doc_type, [field_name])
                     field_stats = None
                     try:
                         # print(f"FALL BACK FIELD: {field_name}")
                         # print("---------------")
                         # invoke LLM to generate output JSON
                         text_content = json.dumps(new_json)
-                        generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
-                        answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+                        promptQuestion = _construct_query_prompt(td, doc_schema, doc_type, [field_name], context=text_content, wrap_prompt_in_dspy_text=True)
+                        # generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+                        generator = RegularGeneratorDSPyText(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+                        # answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+                        answer, field_stats = generator.generate(promptQuestion, budget=td.token_budget)
 
                         # update conv_query_stats
                         conv_query_stats[f"{field_name}_{idx}_fallback"] = field_stats
@@ -528,15 +607,17 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
                 # construct prompt question
                 doc_schema = str(td.outputSchema)
                 doc_type = td.outputSchema.className()
-                promptQuestion = _construct_query_prompt(td, doc_type, [field_name])
                 field_stats = None
                 try:
                     # print(f"FALL BACK FIELD: {field_name}")
                     # print("---------------")
                     # invoke LLM to generate output JSON
                     text_content = json.loads(candidate_dict)
-                    generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
-                    answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+                    promptQuestion = _construct_query_prompt(td, doc_schema, doc_type, [field_name], context=text_content, wrap_prompt_in_dspy_text=True)
+                    # generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+                    generator = RegularGeneratorDSPyText(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+                    # answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+                    answer, field_stats = generator.generate(promptQuestion, budget=td.token_budget)
 
                     # update stats
                     conv_query_stats[f"{field_name}_fallback"] = field_stats

@@ -285,7 +285,6 @@ class InduceFromCandidateOp(PhysicalOp):
         # use image model if this is an image conversion
         if outputSchema == ImageFile and source.outputSchema == File or self.image_conversion:
             # TODO : find a more general way by llm provider 
-            # TODO : which module is responsible of setting PromptStrategy.IMAGE_TO_TEXT? 
             if self.model in [Model.GPT_3_5, Model.GPT_4]:
                 self.model = Model.GPT_4V
             if self.model == Model.GEMINI_1:
@@ -556,7 +555,6 @@ class ParallelInduceFromCandidateOp(PhysicalOp):
         # use image model if this is an image conversion
         if outputSchema == ImageFile and source.outputSchema == File or self.image_conversion:
             # TODO : find a more general way by llm provider 
-            # TODO : which module is responsible of setting PromptStrategy.IMAGE_TO_TEXT? 
             if self.model in [Model.GPT_3_5, Model.GPT_4]:
                 self.model = Model.GPT_4V
             if self.model == Model.GEMINI_1:

@@ -168,14 +168,6 @@ class LogicalOperator:
         Given the logical plan implied by this LogicalOperator, enumerate up to `max`
         possible physical plans and return them as a list.
         """
-        # TODO: for each FilteredScan & ConvertScan try:
-        # 1. swapping different models
-        #    a. different model hyperparams?
-        # 2. different prompt strategies
-        #    a. Zero-Shot vs. Few-Shot vs. COT vs. DSPy
-        # 3. input sub-selection
-        #    a. vector DB, LLM attention, ask-the-LLM
-
         # choose set of acceptable models based on possible llmservices
         models = []
         if os.getenv('OPENAI_API_KEY') is not None:

@@ -228,6 +228,7 @@ class OperatorDerivedSchema(Schema):
     """Schema defined by an operator, e.g., a join or a group by"""
 
 
+# TODO: move these to corelib?
 class File(Schema):
     """
     A File is defined by two Fields:

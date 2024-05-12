@@ -18,6 +18,7 @@ import dsp
 import dspy
 import io
 import os
+import re
 import time
 
 from palimpzest.profiler.attentive_trim import find_best_range, get_trimed, best_substring_match, update_heatmap_json
@@ -391,7 +392,15 @@ class DSPyGenerator(BaseGenerator):
         # print("----------------")
         # print(f"FALL BACK PROMPT")
         # print("----------------")
-        # print(dspy_lm.history[-1]['prompt'])
+        print("----------------")
+        print("---- PROMPT ----")
+        print("----------------")
+        print(dspy_lm.history[-1]['prompt'])
+        print("----------------")
+        print("---- question ----")
+        print(question)
+        print("---- context ----")
+        print(context)
 
         # print("----------------")
         # print(f"FALL BACK ANSWER")
@@ -420,6 +429,254 @@ class DSPyGenerator(BaseGenerator):
             dspy_lm.inspect_history(n=1)
 
         return pred.answer, stats
+
+
+class RegularGeneratorDSPyText(BaseGenerator):
+    """
+    Class for generating outputs with a given model which expects prompts that have been
+    wrapped in DSPy text, but it does not actually use DSPy underneath the hood!
+    This is only going to be used for the evaluation for the paper (to ensure we don't
+    use cached results); after which point it will be retired in favor of the CustomGenerator.
+    """
+    def __init__(self, model_name: str, prompt_strategy: PromptStrategy, doc_schema: str, doc_type: str, verbose: bool=False):
+        super().__init__()
+        self.model_name = model_name
+        self.prompt_strategy = prompt_strategy
+        self.verbose = verbose
+
+        # set prompt signature based on prompt_strategy
+        if prompt_strategy == PromptStrategy.DSPY_COT_BOOL:
+            self.promptSignature = gen_filter_signature_class(doc_schema, doc_type)
+        elif prompt_strategy == PromptStrategy.DSPY_COT_QA:
+            self.promptSignature = gen_qa_signature_class(doc_schema, doc_type)
+
+    def _get_model(self) -> dsp.LM:
+        model = None
+        if self.model_name in [Model.GPT_3_5.value, Model.GPT_4.value]:
+            openai_key = get_api_key('OPENAI_API_KEY')
+            max_tokens = 4096 if self.prompt_strategy == PromptStrategy.DSPY_COT_QA else 150
+            model = dspy.OpenAI(model=self.model_name, api_key=openai_key, temperature=0.0, max_tokens=max_tokens, logprobs=True)
+
+        elif self.model_name in [Model.MIXTRAL.value]:
+            together_key = get_api_key('TOGETHER_API_KEY')
+            model = TogetherHFAdaptor(self.model_name, together_key, logprobs=1)
+
+        elif self.model_name in [Model.GEMINI_1.value]:
+            google_key = get_api_key('GOOGLE_API_KEY')
+            model = dspy.Google(model=self.model_name, api_key=google_key)
+
+        else:
+            raise ValueError("Model must be one of the language models specified in palimpzest.constants.Model")
+
+        return model
+
+    def _get_stats_fields(self, dspy_lm: dsp.LM, response):
+        """
+        Parse and return the usage statistics and finish reason.
+        """
+        # import pdb
+        # pdb.set_trace()
+        answer_re = re.compile("Answer:(.*)", re.DOTALL | re.IGNORECASE)
+        prompt, answer, usage, finish_reason = None, None, None, None
+        if self.model_name in [Model.GPT_3_5.value, Model.GPT_4.value]:
+            answer = response['choices'][-1]['message']['content']
+            usage = dspy_lm.history[-1]['response']['usage']
+            finish_reason = dspy_lm.history[-1]['response']['choices'][-1]['finish_reason']
+            prompt = dspy_lm.history[-1]['prompt']
+
+        elif self.model_name in [Model.GEMINI_1.value]:
+            answer = re.findall(answer_re, response._result.candidates[0].content.parts[0].text)[-1].strip()
+            usage = {"prompt_tokens": 0, "completion_tokens": 0}
+            finish_reason = str(response._result.candidates[0].finish_reason)
+            prompt = dspy_lm.history[-1]['prompt']
+
+        elif self.model_name in [Model.MIXTRAL.value]:
+            answer = re.findall(answer_re, response['choices'][-1]['text'])[-1].strip()
+            usage = response['usage']
+            finish_reason = response['finish_reason']
+            prompt = response['prompt']
+
+        return prompt, answer, usage, finish_reason
+
+    def _get_attn(self, dspy_lm: dsp.LM):
+        """
+        TODO
+        """
+        pass
+
+    def _get_answer_log_probs(self, dspy_lm: dsp.LM, answer: str) -> List[float]:
+        """
+        For the given DSPy LM object:
+        1. fetch the data structure containing its output log probabilities
+        2. filter the data structure for the specific tokens which appear in `answer`
+        3. return the list of those tokens' log probabilities
+        """
+        # get log probabilities data structure
+        tokens, token_logprobs = None, None
+
+        if self.model_name in [Model.GPT_3_5.value, Model.GPT_4.value]:
+            # [{'token': 'some', 'bytes': [12, 34, ...], 'logprob': -0.7198808, 'top_logprobs': []}}]
+            log_probs = dspy_lm.history[-1]['response']['choices'][-1]['logprobs']['content']
+            tokens = list(map(lambda elt: elt['token'], log_probs))
+            token_logprobs = list(map(lambda elt: elt['logprob'], log_probs))
+        elif self.model_name in [Model.GEMINI_1.value]:
+            return None
+            # TODO Google gemini does not provide log probabilities! 
+            # https://github.com/google/generative-ai-python/issues/238
+            # tok_count = dspy_lm.llm.count_tokens(answer).total_tokens
+            # tokens = [""] * tok_count
+            # token_logprobs = [0] * len(tokens)
+        elif self.model_name in [Model.MIXTRAL.value]:
+            # reponse: dict_keys(['prompt', 'choices', 'usage', 'finish_reason', 'tokens', 'token_logprobs'])
+            tokens = dspy_lm.history[-1]['response']['tokens']
+            token_logprobs = dspy_lm.history[-1]['response']['token_logprobs']
+        else:
+            raise ValueError("Model must be one of the language models specified in palimpzest.constants.Model")
+
+        # get indices of the start and end token for the answer
+        # start_idx, end_idx = 0, 0
+        # while not answer.strip() == "".join(tokens[start_idx:end_idx+1]).strip():
+            # if answer.startswith(tokens[start_idx]):
+                # end_idx += 1
+            # else:
+                # start_idx += 1
+                # end_idx = start_idx
+        # filter for log probs of tokens which appear in answer
+        # answer_log_probs = token_logprobs[start_idx:end_idx+1]
+        answer_log_probs = token_logprobs
+        # return those tokens log probabilities
+        return answer_log_probs
+
+    @retry(
+        wait=wait_exponential(multiplier=RETRY_MULTIPLIER, max=RETRY_MAX_SECS),
+        stop=stop_after_attempt(RETRY_MAX_ATTEMPTS),
+        after=log_attempt_number,
+        reraise=True,
+    )
+    # the generate method requires a user-provided budget parameter to specify te token budget. Default is 1.0, meaning the full context will be used.
+    def generate(self, prompt: str, budget: float = 1.0) -> GenerationOutput:
+        # initialize variables around token reduction
+        reduction, full_prompt = False, prompt
+
+        # fetch model
+        lm = self._get_model()
+
+        # # configure DSPy to use this model; both DSPy prompt strategies currently use COT
+        # dspy.settings.configure(lm=dspy_lm)
+        # cot = dspyCOT(self.promptSignature)
+
+        json_object = {}
+        heatmap_file = ''
+        # check if the promptSignature is a QA signature, so we can match the answer to get heatmap
+        if budget < 1.0 and self.prompt_strategy == PromptStrategy.DSPY_COT_QA:
+            file_cache = DataDirectory().getFileCacheDir()
+            prompt_schema = self.promptSignature
+            question = re.findall("Question: (.*?)\n", prompt)[-1]
+            print("Prompt QA Signature: ", prompt_schema)
+            print('Question: ', question)
+            ordered = f'{prompt_schema} {question}'
+            task_hash = hashlib.sha256(ordered.encode()).hexdigest()
+            heatmap_file = os.path.join(file_cache, f"heatmap-{task_hash}.json")
+            print("Heatmap file: ", heatmap_file)
+            if not os.path.exists(heatmap_file):
+                # create the heatmap structure with default resolution of 0.001 and count of 0
+                buckets = int(1.0 / TOKEN_REDUCTION_GRANULARITY)
+                hist = [0] * buckets
+                json_object = {'prompt_schema': f'{prompt_schema}',
+                               'question': question,
+                               'resolution': TOKEN_REDUCTION_GRANULARITY,
+                               'count': 0,
+                               'heatmap': hist}
+
+            else:
+                # parse the heatmap file
+                with open(heatmap_file, 'r') as f:
+                    json_object = json.load(f)
+                    heatmap = json_object['heatmap']
+                    count = json_object['count']
+                    print("count:", count)
+                # only refer to the heatmap if the count is greater than a enough sample size
+                # TODO: only trim the context if the attention is clustered in a small region
+                prompt_pieces = prompt.split("---")
+                context_re = re.compile("Context:\n(.*?)\n\nQuestion:", re.DOTALL)
+                context = re.findall(context_re, prompt_pieces[-1])[-1]
+                if count >= TOKEN_REDUCTION_SAMPLE:
+                    si, ei = find_best_range(heatmap, int(budget/TOKEN_REDUCTION_GRANULARITY), trim_zeros=False)
+                    sr, er = si * TOKEN_REDUCTION_GRANULARITY, ei * TOKEN_REDUCTION_GRANULARITY
+                    print("start ratio:", sr, "end ratio:", er)
+                    context = get_trimed(context, sr, er)
+                    reduction = True
+            
+                # construct new prompt w/smaller context
+                sub_re = re.compile("Context:\n(.*?)\n\nQuestion:", re.DOTALL)
+                prompt_pieces[-1] = re.sub(sub_re, f"Context:\n{context}\n\nQuestion:", prompt_pieces[-1])
+                prompt = "---".join(prompt_pieces)
+                print(f"NEW REDUCED PROMPT: {prompt}")
+
+        # execute LLM generation
+        start_time = time.time()
+
+        print(f"Generating -- {self.model_name} -- Token budget: {budget}")
+        response = lm.request(prompt)
+
+        end_time = time.time()
+
+        # extract the log probabilities for the actual result(s) which are returned
+        final_prompt, answer, usage, finish_reason = self._get_stats_fields(lm, response)
+        answer_log_probs = self._get_answer_log_probs(lm, answer)
+
+        # collect statistics on prompt, usage, and timing
+        stats = GenerationStats(
+            model_name=self.model_name,
+            llm_call_duration_secs=end_time - start_time,
+            prompt=final_prompt,
+            usage=usage,
+            finish_reason=finish_reason,
+            answer_log_probs=[],
+            answer=answer,
+        )
+
+        # if reduction is enabled but the answer is None, fallback to the full prompt
+        if reduction and answer==None:
+            # run query on full prompt 
+            response = lm.request(full_prompt)
+
+            # NOTE: in the future, we should capture each of these^ calls in two separate
+            #       GenerationStats objects, but for now we just aggregate them
+            end_time = time.time()
+
+            # extract the log probabilities for the actual result(s) which are returned
+            final_prompt, answer, usage, finish_reason = self._get_stats_fields(lm, response)
+            answer_log_probs = self._get_answer_log_probs(lm, answer)
+
+            stats.llm_call_duration_secs = end_time - start_time
+            stats.prompt = final_prompt
+            for k, _ in stats.usage.items():
+                stats.usage[k] += usage[k]
+            stats.finish_reason = finish_reason
+            stats.answer_log_probs = answer_log_probs
+            stats.answer = answer
+
+        print(answer)
+
+        # taken reduction post processing if enabled
+        if budget < 1.0 and self.prompt_strategy == PromptStrategy.DSPY_COT_QA:
+            print("Reduction enabled")
+            print("answer:", answer)
+            try:
+                gsi, gei = best_substring_match(answer, full_prompt)
+            except Exception as e:
+                print("Error in substring match:", e)
+                gsi, gei = 0, len(full_prompt)
+            context_len = len(full_prompt)
+            gsr, ger = gsi/context_len, gei/context_len
+            norm_si, norm_ei = int(gsr/TOKEN_REDUCTION_GRANULARITY), int(ger/TOKEN_REDUCTION_GRANULARITY)
+            print("best_start:", gsi, "best_end:", gei)
+            json_object = update_heatmap_json(json_object, norm_si, norm_ei)
+            with open(heatmap_file, 'w') as f:
+                json.dump(json_object, f)
+
+        return answer, stats
 
 
 class ImageTextGenerator(BaseGenerator):
@@ -472,6 +729,7 @@ class ImageTextGenerator(BaseGenerator):
                     }
                 ],
                 "max_tokens": 4000,
+                "temperature": 0.0,
                 "logprobs": True,
             }]
 
