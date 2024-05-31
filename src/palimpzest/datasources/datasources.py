@@ -74,8 +74,8 @@ class DirectorySource(DataSource):
                 if os.path.isfile(file_path):
                     dr = DataRecord(self.schema, scan_idx=self.idx)
                     dr.filename = file_path
-                    bytes_data = open(file_path, "rb").read()
-                    dr.contents = bytes_data
+                    with open(file_path, "rb") as f:
+                        dr.contents = f.read()
                     yield dr
 
                     self.idx += 1
@@ -102,8 +102,8 @@ class FileSource(DataSource):
             for path in [self.path]:
                 dr = DataRecord(self.schema, scan_idx=self.idx)
                 dr.filename = path
-                bytes_data = open(path, "rb").read()
-                dr.contents = bytes_data
+                with open(path, "rb") as f:
+                    dr.contents = f.read()
 
                 yield dr
 

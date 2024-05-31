@@ -1,5 +1,6 @@
 .env
 build/*
+dist/*
 .vscode/*
 
 # python artifacts
@@ -24,3 +25,5 @@ testdata/maildir/
 # evaluation
 old-eval-results/
 eval-results/
+
+testdata/enron-eval/*.txt

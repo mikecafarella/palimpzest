@@ -60,7 +60,7 @@ class CustomGenerator(BaseGenerator):
             max_tokens = 4096
             model = dspy.OpenAI(model=self.model_name, api_key=openai_key, temperature=0.0, max_tokens=max_tokens, logprobs=True)
 
-        elif self.model_name in [Model.MIXTRAL.value]:
+        elif self.model_name in [Model.MIXTRAL.value, Model.LLAMA2.value]:
             together_key = get_api_key('TOGETHER_API_KEY')
             model = TogetherHFAdaptor(self.model_name, together_key, logprobs=1)
 
@@ -84,7 +84,7 @@ class CustomGenerator(BaseGenerator):
         elif self.model_name in [Model.GEMINI_1.value]:
             usage = {"prompt_tokens": 0, "completion_tokens": 0}
             finish_reason = dspy_lm.history[-1]['response'][0]._result.candidates[0].finish_reason
-        elif self.model_name in [Model.MIXTRAL.value]:
+        elif self.model_name in [Model.MIXTRAL.value, Model.LLAMA2.value]:
             usage = dspy_lm.history[-1]['response']['usage']
             finish_reason = dspy_lm.history[-1]['response']['finish_reason']
 
@@ -118,7 +118,7 @@ class CustomGenerator(BaseGenerator):
             # tok_count = dspy_lm.llm.count_tokens(answer).total_tokens
             # tokens = [""] * tok_count
             # token_logprobs = [0] * len(tokens)
-        elif self.model_name in [Model.MIXTRAL.value]:
+        elif self.model_name in [Model.MIXTRAL.value, Model.LLAMA2.value]:
             # reponse: dict_keys(['prompt', 'choices', 'usage', 'finish_reason', 'tokens', 'token_logprobs'])
             tokens = dspy_lm.history[-1]['response']['tokens']
             token_logprobs = dspy_lm.history[-1]['response']['token_logprobs']
@@ -177,138 +177,6 @@ class CustomGenerator(BaseGenerator):
 
         return answer, stats
 
-class DSPyGenerator(BaseGenerator):
-    """
-    Class for generating outputs with a given model using a custom prompt.
-    """
-    def __init__(self, model_name: str, verbose: bool=False):
-        super().__init__()
-        self.model_name = model_name
-        self.verbose = verbose
-
-    def _get_model(self) -> dsp.LM:
-        model = None
-        if self.model_name in [Model.GPT_3_5.value, Model.GPT_4.value]:
-            openai_key = get_api_key('OPENAI_API_KEY')
-            max_tokens = 4096
-            model = dspy.OpenAI(model=self.model_name, api_key=openai_key, temperature=0.0, max_tokens=max_tokens, logprobs=True)
-
-        elif self.model_name in [Model.MIXTRAL.value]:
-            together_key = get_api_key('TOGETHER_API_KEY')
-            model = TogetherHFAdaptor(self.model_name, together_key, logprobs=1)
-
-        elif self.model_name in [Model.GEMINI_1.value]:
-            google_key = get_api_key('GOOGLE_API_KEY')
-            model = dspy.Google(model=self.model_name, api_key=google_key)
-
-        else:
-            raise ValueError("Model must be one of the language models specified in palimpzest.constants.Model")
-
-        return model
-
-    def _get_usage_and_finish_reason(self, dspy_lm: dsp.LM):
-        """
-        Parse and return the usage statistics and finish reason.
-        """
-        usage, finish_reason = None, None
-        if self.model_name in [Model.GPT_3_5.value, Model.GPT_4.value]:
-            usage = dspy_lm.history[-1]['response']['usage']
-            finish_reason = dspy_lm.history[-1]['response']['choices'][-1]['finish_reason']
-        elif self.model_name in [Model.GEMINI_1.value]:
-            usage = {"prompt_tokens": 0, "completion_tokens": 0}
-            finish_reason = dspy_lm.history[-1]['response'][0]._result.candidates[0].finish_reason
-        elif self.model_name in [Model.MIXTRAL.value]:
-            usage = dspy_lm.history[-1]['response']['usage']
-            finish_reason = dspy_lm.history[-1]['response']['finish_reason']
-
-        return usage, finish_reason
-
-    def _get_attn(self, dspy_lm: dsp.LM):
-        """
-        TODO
-        """
-        pass
-
-    def _get_answer_log_probs(self, dspy_lm: dsp.LM, answer: str) -> List[float]:
-        """
-        For the given DSPy LM object:
-        1. fetch the data structure containing its output log probabilities
-        2. filter the data structure for the specific tokens which appear in `answer`
-        3. return the list of those tokens' log probabilities
-        """
-        # get log probabilities data structure
-        tokens, token_logprobs = None, None
-
-        if self.model_name in [Model.GPT_3_5.value, Model.GPT_4.value]:
-            # [{'token': 'some', 'bytes': [12, 34, ...], 'logprob': -0.7198808, 'top_logprobs': []}}]
-            log_probs = dspy_lm.history[-1]['response']['choices'][-1]['logprobs']['content']
-            tokens = list(map(lambda elt: elt['token'], log_probs))
-            token_logprobs = list(map(lambda elt: elt['logprob'], log_probs))
-        elif self.model_name in [Model.GEMINI_1.value]:
-            return None
-            # TODO Google gemini does not provide log probabilities! 
-            # https://github.com/google/generative-ai-python/issues/238
-            # tok_count = dspy_lm.llm.count_tokens(answer).total_tokens
-            # tokens = [""] * tok_count
-            # token_logprobs = [0] * len(tokens)
-        elif self.model_name in [Model.MIXTRAL.value]:
-            # reponse: dict_keys(['prompt', 'choices', 'usage', 'finish_reason', 'tokens', 'token_logprobs'])
-            tokens = dspy_lm.history[-1]['response']['tokens']
-            token_logprobs = dspy_lm.history[-1]['response']['token_logprobs']
-        else:
-            raise ValueError("Model must be one of the language models specified in palimpzest.constants.Model")
-
-        # get indices of the start and end token for the answer
-        # start_idx, end_idx = 0, 0
-        # while not answer.strip() == "".join(tokens[start_idx:end_idx+1]).strip():
-            # if answer.startswith(tokens[start_idx]):
-                # end_idx += 1
-            # else:
-                # start_idx += 1
-                # end_idx = start_idx
-        # filter for log probs of tokens which appear in answer
-        # answer_log_probs = token_logprobs[start_idx:end_idx+1]
-        answer_log_probs = token_logprobs
-        # return those tokens log probabilities
-        return answer_log_probs
-
-    @retry(
-        wait=wait_exponential(multiplier=RETRY_MULTIPLIER, max=RETRY_MAX_SECS),
-        stop=stop_after_attempt(RETRY_MAX_ATTEMPTS),
-        after=log_attempt_number,
-        reraise=True,
-    )
-    def generate(self, prompt: str) -> GenerationOutput:
-        # fetch model
-        dspy_lm = self._get_model()
-
-        start_time = time.time()
-        
-        response = dspy_lm.request(prompt)
-        
-        end_time = time.time()
-        
-        answer = response['choices'][0]['message']['content']
-        answer_log_probs = response['choices'][0]['logprobs']
-        finish_reason = response['choices'][0]['finish_reason']
-        usage = response['usage']
-
-        # collect statistics on prompt, usage, and timing
-        stats = GenerationStats(
-            model_name=self.model_name,
-            llm_call_duration_secs=end_time - start_time,
-            prompt=dspy_lm.history[-1]['prompt'],
-            usage=usage,
-            finish_reason=finish_reason,
-            answer_log_probs=answer_log_probs,
-            answer=answer,
-        )
-
-        if self.verbose:
-            print("Prompt history:")
-            dspy_lm.inspect_history(n=1)
-
-        return answer, stats
 
 class DSPyGenerator(BaseGenerator):
     """
@@ -328,19 +196,19 @@ class DSPyGenerator(BaseGenerator):
         else:
             raise ValueError(f"DSPyGenerator does not support prompt_strategy: {prompt_strategy.value}")
 
-    def _get_model(self) -> dsp.LM:
+    def _get_model(self, plan_idx) -> dsp.LM:
         model = None
         if self.model_name in [Model.GPT_3_5.value, Model.GPT_4.value]:
             openai_key = get_api_key('OPENAI_API_KEY')
             max_tokens = 4096 if self.prompt_strategy == PromptStrategy.DSPY_COT_QA else 150
             model = dspy.OpenAI(model=self.model_name, api_key=openai_key, temperature=0.0, max_tokens=max_tokens, logprobs=True)
 
-        elif self.model_name in [Model.MIXTRAL.value]:
+        elif self.model_name in [Model.MIXTRAL.value, Model.LLAMA2.value]:
             together_key = get_api_key('TOGETHER_API_KEY')
             model = TogetherHFAdaptor(self.model_name, together_key, logprobs=1)
 
         elif self.model_name in [Model.GEMINI_1.value]:
-            google_key = get_api_key('GOOGLE_API_KEY')
+            google_key = get_api_key(f'GOOGLE_API_KEY_{plan_idx}')
             model = dspy.Google(model=self.model_name, api_key=google_key)
 
         else:
@@ -359,7 +227,7 @@ class DSPyGenerator(BaseGenerator):
         elif self.model_name in [Model.GEMINI_1.value]:
             usage = {"prompt_tokens": 0, "completion_tokens": 0}
             finish_reason = dspy_lm.history[-1]['response'][0]._result.candidates[0].finish_reason
-        elif self.model_name in [Model.MIXTRAL.value]:
+        elif self.model_name in [Model.MIXTRAL.value, Model.LLAMA2.value]:
             usage = dspy_lm.history[-1]['response']['usage']
             finish_reason = dspy_lm.history[-1]['response']['finish_reason']
 
@@ -393,7 +261,7 @@ class DSPyGenerator(BaseGenerator):
             # tok_count = dspy_lm.llm.count_tokens(answer).total_tokens
             # tokens = [""] * tok_count
             # token_logprobs = [0] * len(tokens)
-        elif self.model_name in [Model.MIXTRAL.value]:
+        elif self.model_name in [Model.MIXTRAL.value, Model.LLAMA2.value]:
             # reponse: dict_keys(['prompt', 'choices', 'usage', 'finish_reason', 'tokens', 'token_logprobs'])
             tokens = dspy_lm.history[-1]['response']['tokens']
             token_logprobs = dspy_lm.history[-1]['response']['token_logprobs']
@@ -421,12 +289,12 @@ class DSPyGenerator(BaseGenerator):
         reraise=True,
     )
     # the generate method requires a user-provided budget parameter to specify te token budget. Default is 1.0, meaning the full context will be used.
-    def generate(self, context: str, question: str, budget: float = 1.0) -> GenerationOutput:
+    def generate(self, context: str, question: str, budget: float = 1.0, plan_idx: int=0, heatmap_json_obj: dict=None) -> GenerationOutput:
         # initialize variables around token reduction
         reduction, full_context = False, context
 
         # fetch model
-        dspy_lm = self._get_model()
+        dspy_lm = self._get_model(plan_idx)
 
         # configure DSPy to use this model; both DSPy prompt strategies currently use COT
         dspy.settings.configure(lm=dspy_lm)
@@ -436,19 +304,20 @@ class DSPyGenerator(BaseGenerator):
         heatmap_file = ''
         # check if the promptSignature is a QA signature, so we can match the answer to get heatmap
         if budget < 1.0 and self.prompt_strategy == PromptStrategy.DSPY_COT_QA:
-            file_cache = DataDirectory().getFileCacheDir()
+            # file_cache = DataDirectory().getFileCacheDir()
             prompt_schema = self.promptSignature
-            print("Prompt QA Signature: ", prompt_schema)
-            print('Question: ', question)
-            ordered = f'{prompt_schema} {question}'
-            task_hash = hashlib.sha256(ordered.encode()).hexdigest()
-            heatmap_file = os.path.join(file_cache, f"heatmap-{task_hash}.json")
-            print("Heatmap file: ", heatmap_file)
-            if not os.path.exists(heatmap_file):
+            # print("Prompt QA Signature: ", prompt_schema)
+            # print('Question: ', question)
+            # ordered = f'{prompt_schema} {question} {plan_idx}'
+            # task_hash = hashlib.sha256(ordered.encode()).hexdigest()
+            # heatmap_file = os.path.join(file_cache, f"heatmap-{task_hash}.json")
+            # print("Heatmap file: ", heatmap_file)
+            # if not os.path.exists(heatmap_file):
+            if heatmap_json_obj is None:
                 # create the heatmap structure with default resolution of 0.001 and count of 0
                 buckets = int(1.0 / TOKEN_REDUCTION_GRANULARITY)
                 hist = [0] * buckets
-                json_object = {'prompt_schema': f'{prompt_schema}',
+                heatmap_json_obj = {'prompt_schema': f'{prompt_schema}',
                                'question': question,
                                'resolution': TOKEN_REDUCTION_GRANULARITY,
                                'count': 0,
@@ -456,20 +325,22 @@ class DSPyGenerator(BaseGenerator):
 
             else:
                 # only parse the heatmap file if token reduction is enabled (budget is less than 1.0)
-                if budget < 1.0:
-                    with open(heatmap_file, 'r') as f:
-                        json_object = json.load(f)
-                        heatmap = json_object['heatmap']
-                        count = json_object['count']
-                        print("count:", count)
-                    # only refer to the heatmap if the count is greater than a enough sample size
-                    # TODO: only trim the context if the attention is clustered in a small region
-                    if count >= TOKEN_REDUCTION_SAMPLE:
-                        si, ei = find_best_range(heatmap, int(budget/TOKEN_REDUCTION_GRANULARITY), trim_zeros=False)
-                        sr, er = si * TOKEN_REDUCTION_GRANULARITY, ei * TOKEN_REDUCTION_GRANULARITY
-                        print("start ratio:", sr, "end ratio:", er)
-                        context = get_trimed(context, sr, er)
-                        reduction = True
+                # with open(heatmap_file, 'r') as f:
+                #     json_object = json.load(f)
+                #     heatmap = json_object['heatmap']
+                #     count = json_object['count']
+                #     print("count:", count)
+                heatmap = heatmap_json_obj['heatmap']
+                count = heatmap_json_obj['count']
+                print("count:", count)
+                # only refer to the heatmap if the count is greater than a enough sample size
+                # TODO: only trim the context if the attention is clustered in a small region
+                if count >= TOKEN_REDUCTION_SAMPLE:
+                    si, ei = find_best_range(heatmap, int(budget/TOKEN_REDUCTION_GRANULARITY), trim_zeros=False)
+                    sr, er = si * TOKEN_REDUCTION_GRANULARITY, ei * TOKEN_REDUCTION_GRANULARITY
+                    print("start ratio:", sr, "end ratio:", er)
+                    context = get_trimed(context, sr, er)
+                    reduction = True
 
 
         # execute LLM generation
@@ -521,17 +392,17 @@ class DSPyGenerator(BaseGenerator):
             stats.answer = pred.answer
 
         # print("----------------")
-        # print(f"FALL BACK PROMPT")
+        # print(f"PROMPT")
         # print("----------------")
         # print(dspy_lm.history[-1]['prompt'])
 
         # print("----------------")
-        # print(f"FALL BACK ANSWER")
+        # print(f"ANSWER")
         # print("----------------")
         print(pred.answer)
 
         # taken reduction post processing if enabled
-        if budget < 1.0 and self.prompt_strategy == PromptStrategy.DSPY_COT_QA:
+        if budget < 1.0 and self.prompt_strategy == PromptStrategy.DSPY_COT_QA and heatmap_json_obj['count'] < MAX_HEATMAP_UPDATES:
             print("Reduction enabled")
             print("answer:", pred.answer)
             try:
@@ -543,15 +414,15 @@ class DSPyGenerator(BaseGenerator):
             gsr, ger = gsi/context_len, gei/context_len
             norm_si, norm_ei = int(gsr/TOKEN_REDUCTION_GRANULARITY), int(ger/TOKEN_REDUCTION_GRANULARITY)
             print("best_start:", gsi, "best_end:", gei)
-            json_object = update_heatmap_json(json_object, norm_si, norm_ei)
-            with open(heatmap_file, 'w') as f:
-                json.dump(json_object, f)
+            heatmap_json_obj = update_heatmap_json(heatmap_json_obj, norm_si, norm_ei)
+            # with open(heatmap_file, 'w') as f:
+            #     json.dump(json_object, f)
 
         if self.verbose:
             print("Prompt history:")
             dspy_lm.inspect_history(n=1)
 
-        return pred.answer, stats
+        return pred.answer, heatmap_json_obj, stats
 
 
 class ImageTextGenerator(BaseGenerator):
@@ -604,6 +475,7 @@ class ImageTextGenerator(BaseGenerator):
                     }
                 ],
                 "max_tokens": 4000,
+                "temperature": 0.0,
                 "logprobs": True,
             }]
 

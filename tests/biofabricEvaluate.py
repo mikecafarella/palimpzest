@@ -83,7 +83,7 @@ def score_biofabric_plans(result_dir) -> float:
 
         stats_dict = json.load(open(f"{result_dir}/{file}"))
         records = stats_dict["records"]
-        
+
         # parse records
         exclude_keys = ["filename", "op_id", "uuid", "parent_uuid", "stats"]
         output_rows = []

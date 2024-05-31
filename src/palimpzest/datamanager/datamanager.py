@@ -54,7 +54,8 @@ class DataDirectory(metaclass=DataDirectorySingletonMeta):
             os.makedirs(self._dir)
             os.makedirs(self._dir + "/data/registered")
             os.makedirs(self._dir + "/data/cache")
-            pickle.dump(self._registry, open(self._dir + "/data/cache/registry.pkl", "wb"))
+            with open(self._dir + "/data/cache/registry.pkl", "wb") as f:
+                pickle.dump(self._registry, f)
 
             # create default config
             default_config = Config("default")
@@ -74,7 +75,8 @@ class DataDirectory(metaclass=DataDirectorySingletonMeta):
 
         # Unpickle the registry of data sources
         if os.path.exists(self._dir + "/data/cache/registry.pkl"):
-            self._registry = pickle.load(open(self._dir + "/data/cache/registry.pkl", "rb"))
+            with open(self._dir + "/data/cache/registry.pkl", "rb") as f:
+                self._registry = pickle.load(f)
 
         # Iterate through all items in the cache directory, and rebuild the table of entries
         for root, _, files in os.walk(self._dir + "/data/cache"):
@@ -99,19 +101,22 @@ class DataDirectory(metaclass=DataDirectorySingletonMeta):
         """Register a local directory as a data source."""
         self._registry[dataset_id] = ("dir", path)
         if not dataset_id.startswith("ephemeral"):
-            pickle.dump(self._registry, open(self._dir + "/data/cache/registry.pkl", "wb"))
+            with open(self._dir + "/data/cache/registry.pkl", "wb") as f:
+                pickle.dump(self._registry, f)
 
     def registerLocalFile(self, path, dataset_id):
         """Register a local file as a data source."""
         self._registry[dataset_id] = ("file", path)
         if not dataset_id.startswith("ephemeral"):
-            pickle.dump(self._registry, open(self._dir + "/data/cache/registry.pkl", "wb"))
+            with open(self._dir + "/data/cache/registry.pkl", "wb") as f:
+                pickle.dump(self._registry, f)
 
     def registerDataset(self, vals, dataset_id):
         """Register an in-memory dataset as a data source"""
         self._registry[dataset_id] = ("memory", vals)
         if not dataset_id.startswith("ephemeral"):
-            pickle.dump(self._registry, open(self._dir + "/data/cache/registry.pkl", "wb"))
+            with open(self._dir + "/data/cache/registry.pkl", "wb") as f:
+                pickle.dump(self._registry, f)
 
     def registerUserSource(self, src:UserSource, dataset_id:str):
         """Register a user source as a data source."""
@@ -211,7 +216,8 @@ class DataDirectory(metaclass=DataDirectorySingletonMeta):
     def rmRegisteredDataset(self, dataset_id):
         """Remove a dataset from the registry."""
         del self._registry[dataset_id]
-        pickle.dump(self._registry, open(self._dir + "/data/cache/registry.pkl", "wb"))
+        with open(self._dir + "/data/cache/registry.pkl", "wb") as f:
+            pickle.dump(self._registry, f)
 
     #
     # These methods handle cached results. They are meant to be persisted for performance reasons,
@@ -221,7 +227,8 @@ class DataDirectory(metaclass=DataDirectorySingletonMeta):
         """Return a cached result."""
         if not cacheId in self._cache:
             return None
-        cachedResult = pickle.load(open(self._cache[cacheId], "rb"))
+        with open(self._cache[cacheId], "rb") as f:
+            cachedResult = pickle.load(f)
         def iterateOverCachedResult():
             for x in cachedResult:
                 yield x
@@ -255,7 +262,8 @@ class DataDirectory(metaclass=DataDirectorySingletonMeta):
         """Close the cache."""
         filename = self._dir + "/data/cache/" + cacheId + ".cached"
         try:
-            pickle.dump(self._tempCache[cacheId], open(filename, "wb"))
+            with open(filename, "wb") as f:
+                pickle.dump(self._tempCache[cacheId], f)
         except pickle.PicklingError:
             print("Warning: Failed to save cache due to pickling error")
             os.remove(filename)

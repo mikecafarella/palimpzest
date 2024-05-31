@@ -17,10 +17,14 @@ from palimpzest.operators import (
     PhysicalOp,
     ApplyGroupByOp
 )
+from palimpzest.profiler import StatsProcessor
 
 from copy import deepcopy
 from itertools import permutations
 from typing import List, Tuple
+
+import numpy as np
+import pandas as pd
 
 import os
 import random
@@ -49,6 +53,24 @@ class LogicalOperator:
 
     def _getPhysicalTree(self, strategy: str=None, source: PhysicalOp=None, shouldProfile: bool=False) -> PhysicalOp:
         raise NotImplementedError("Abstract method")
+
+    def _getModels(self, include_vision: bool=False):
+        models = []
+        if os.getenv('OPENAI_API_KEY') is not None:
+            models.extend([Model.GPT_3_5, Model.GPT_4])
+            # models.extend([Model.GPT_4])
+            # models.extend([Model.GPT_3_5])
+
+        if os.getenv('TOGETHER_API_KEY') is not None:
+            models.extend([Model.MIXTRAL])
+
+        if os.getenv('GOOGLE_API_KEY') is not None:
+            models.extend([Model.GEMINI_1])
+
+        if include_vision:
+            models.append(Model.GPT_4V)
+
+        return models
 
     @staticmethod
     def _compute_legal_permutations(filterAndConvertOps: List[LogicalOperator]) -> List[List[LogicalOperator]]:
@@ -162,6 +184,35 @@ class LogicalOperator:
             # return roots of opPermutations
             return list(map(lambda ops: ops[0], opPermutations))
 
+    def _createBaselinePlan(self, model: Model):
+        """A simple wrapper around _createSentinelPlan as right now these are one and the same."""
+        return self._createSentinelPlan(model)
+
+    def _createSentinelPlan(self, model: Model):
+        """
+        Create the sentinel plans, which -- at least for now --- are single model plans
+        which follow the structure of the user-specified program.
+        """
+        # base case: this is a root op
+        if self.inputOp is None:
+            return self._getPhysicalTree(strategy=PhysicalOp.LOCAL_PLAN, shouldProfile=True)
+
+        # recursive case: get list of possible input physical plans
+        subTreePhysicalPlan = self.inputOp._createSentinelPlan(model)
+        subTreePhysicalPlan = subTreePhysicalPlan.copy()
+
+        physicalPlan = None
+        if isinstance(self, ConvertScan):
+            physicalPlan = self._getPhysicalTree(strategy=PhysicalOp.LOCAL_PLAN, source=subTreePhysicalPlan, model=model, query_strategy=QueryStrategy.BONDED_WITH_FALLBACK, token_budget=1.0, shouldProfile=True)
+
+        elif isinstance(self, FilteredScan):
+            physicalPlan = self._getPhysicalTree(strategy=PhysicalOp.LOCAL_PLAN, source=subTreePhysicalPlan, model=model, shouldProfile=True)
+
+        else:
+            physicalPlan = self._getPhysicalTree(strategy=PhysicalOp.LOCAL_PLAN, source=subTreePhysicalPlan, shouldProfile=True)
+
+        return physicalPlan
+
 
     def _createPhysicalPlans(self, allow_model_selection: bool=False, allow_codegen: bool=False, allow_token_reduction: bool=False, shouldProfile: bool=False) -> List[PhysicalOp]:
         """
@@ -177,18 +228,7 @@ class LogicalOperator:
         #    a. vector DB, LLM attention, ask-the-LLM
 
         # choose set of acceptable models based on possible llmservices
-        models = []
-        if os.getenv('OPENAI_API_KEY') is not None:
-            models.extend([Model.GPT_3_5, Model.GPT_4])
-            # models.extend([Model.GPT_4])
-            # models.extend([Model.GPT_3_5])
-
-        if os.getenv('TOGETHER_API_KEY') is not None:
-            models.extend([Model.MIXTRAL])
-
-        if os.getenv('GOOGLE_API_KEY') is not None:
-            models.extend([Model.GEMINI_1])
-
+        models = self._getModels()
         assert len(models) > 0, "No models available to create physical plans! You must set at least one of the following environment variables: [OPENAI_API_KEY, TOGETHER_API_KEY, GOOGLE_API_KEY]"
 
         # determine which query strategies may be used
@@ -227,22 +267,29 @@ class LogicalOperator:
         if isinstance(self, ConvertScan):
             for subTreePhysicalPlan in subTreePhysicalPlans:
                 for qs in query_strategies:
-                    for token_budget in token_budgets:
-                        for model in models:
-                            # if model selection is disallowed; skip any plans which would use a different model in this operator
-                            subtree_models = [m for m in get_models_from_subtree(subTreePhysicalPlan) if m is not None and m != Model.GPT_4V]
-                            if not allow_model_selection and len(subtree_models) > 0 and subtree_models[0] != model:
-                                continue
+                    if qs not in [QueryStrategy.CODE_GEN_WITH_FALLBACK, QueryStrategy.CODE_GEN]:
+                        for token_budget in token_budgets:
+                            for model in models:
+                                # if model selection is disallowed; skip any plans which would use a different model in this operator
+                                subtree_models = [m for m in get_models_from_subtree(subTreePhysicalPlan) if m is not None and m != Model.GPT_4V]
+                                if not allow_model_selection and len(subtree_models) > 0 and subtree_models[0] != model:
+                                    continue
 
-                            # NOTE: failing to make a copy will lead to duplicate profile information being captured
-                            # create a copy of subTreePhysicalPlan and use it as source for this physicalPlan
-                            subTreePhysicalPlan = subTreePhysicalPlan.copy()
-                            physicalPlan = self._getPhysicalTree(strategy=PhysicalOp.LOCAL_PLAN, source=subTreePhysicalPlan, model=model, query_strategy=qs, token_budget=token_budget, shouldProfile=shouldProfile)
-                            physicalPlans.append(physicalPlan)
-                            # GV Checking if there is an hardcoded function exposes that we need to refactor the solver/physical function generation
-                            td = physicalPlan._makeTaskDescriptor()
-                            if td.model == None:
-                                break
+                                # NOTE: failing to make a copy will lead to duplicate profile information being captured
+                                # create a copy of subTreePhysicalPlan and use it as source for this physicalPlan
+                                subTreePhysicalPlan = subTreePhysicalPlan.copy()
+                                physicalPlan = self._getPhysicalTree(strategy=PhysicalOp.LOCAL_PLAN, source=subTreePhysicalPlan, model=model, query_strategy=qs, token_budget=token_budget, shouldProfile=shouldProfile)
+                                physicalPlans.append(physicalPlan)
+                                # GV Checking if there is an hardcoded function exposes that we need to refactor the solver/physical function generation
+                                td = physicalPlan._makeTaskDescriptor()
+                                if td.model == None:
+                                    break
+                    else:
+                        # NOTE: failing to make a copy will lead to duplicate profile information being captured
+                        # create a copy of subTreePhysicalPlan and use it as source for this physicalPlan
+                        subTreePhysicalPlan = subTreePhysicalPlan.copy()
+                        physicalPlan = self._getPhysicalTree(strategy=PhysicalOp.LOCAL_PLAN, source=subTreePhysicalPlan, model=Model.GPT_4, query_strategy=qs, token_budget=1.0, shouldProfile=shouldProfile)
+                        physicalPlans.append(physicalPlan)
 
         elif isinstance(self, FilteredScan):
             for subTreePhysicalPlan in subTreePhysicalPlans:
@@ -272,8 +319,19 @@ class LogicalOperator:
 
         return physicalPlans
 
-    def createPhysicalPlanCandidates(self, max: int=None, cost_estimate_sample_data: List[Dict[str, Any]]=None, allow_model_selection: bool=False, allow_codegen: bool=False, allow_token_reduction: bool=False, pareto_optimal: bool=True, shouldProfile: bool=False) -> List[PhysicalPlan]:
+    def createPhysicalPlanCandidates(
+        self, max: int=None, min: int=None, sentinels: bool=False, cost_estimate_sample_data: List[Dict[str, Any]]=None,
+        allow_model_selection: bool=False, allow_codegen: bool=False, allow_token_reduction: bool=False,
+        pareto_optimal: bool=True, include_baselines: bool=False, shouldProfile: bool=False,
+    ) -> List[PhysicalPlan]:
         """Return a set of physical trees of operators."""
+        # only fetch sentinel plans if specified
+        if sentinels:
+            models = self._getModels()
+            assert len(models) > 0, "No models available to create physical plans! You must set at least one of the following environment variables: [OPENAI_API_KEY, TOGETHER_API_KEY, GOOGLE_API_KEY]"
+            sentinel_plans = [self._createSentinelPlan(model) for model in models]
+            return sentinel_plans
+
         # create set of logical plans (e.g. consider different filter/join orderings)
         logicalPlans = LogicalOperator._createLogicalPlans(self)
         print(f"LOGICAL PLANS: {len(logicalPlans)}")
@@ -291,10 +349,119 @@ class LogicalOperator:
         ]
         print(f"INITIAL PLANS: {len(physicalPlans)}")
 
+        # compute estimates for every operator
+        op_filters_to_estimates = {}
+        if cost_estimate_sample_data is not None and cost_estimate_sample_data != []:
+            # construct full dataset of samples
+            df = pd.DataFrame(cost_estimate_sample_data)
+
+            # get unique set of operator filters:
+            # - for base/cache scans this is very simple
+            # - for filters, this is based on the unique filter string or function (per-model)
+            # - for induce, this is based on the generated field(s) (per-model)
+            op_filters_to_estimates = {}
+            logical_op = logicalPlans[0]
+            while logical_op is not None:
+                op_filter, estimates = None, None
+                if isinstance(logical_op, BaseScan):
+                    op_filter = "op_name == 'base_scan'"
+                    op_df = df.query(op_filter)
+                    if not op_df.empty:
+                        estimates = {
+                            "time_per_record": StatsProcessor._est_time_per_record(op_df)
+                        }
+                    op_filters_to_estimates[op_filter] = estimates
+
+                elif isinstance(logical_op, CacheScan):
+                    op_filter = "op_name == 'cache_scan'"
+                    op_df = df.query(op_filter)
+                    if not op_df.empty:
+                        estimates = {
+                            "time_per_record": StatsProcessor._est_time_per_record(op_df)
+                        }
+                    op_filters_to_estimates[op_filter] = estimates
+
+                elif isinstance(logical_op, ConvertScan):
+                    generated_fields_str = "-".join(sorted(logical_op.generated_fields))
+                    op_filter = f"(generated_fields == '{generated_fields_str}') & (op_name == 'induce' | op_name == 'p_induce')"
+                    op_df = df.query(op_filter)
+                    if not op_df.empty:
+                        # compute estimates per-model, and add None which forces computation of avg. across all models
+                        models = self._getModels(include_vision=True) + [None]
+                        estimates = {model: None for model in models}
+                        for model in models:
+                            model_name = model.value if model is not None else None
+                            est_tokens = StatsProcessor._est_num_input_output_tokens(op_df, model_name=model_name)
+                            model_estimates = {
+                                "time_per_record": StatsProcessor._est_time_per_record(op_df, model_name=model_name),
+                                "cost_per_record": StatsProcessor._est_usd_per_record(op_df, model_name=model_name),
+                                "est_num_input_tokens": est_tokens[0],
+                                "est_num_output_tokens": est_tokens[1],
+                                "selectivity": StatsProcessor._est_selectivity(df, op_df, model_name=model_name),
+                                "quality": StatsProcessor._est_quality(op_df, model_name=model_name),
+                            }
+                            estimates[model_name] = model_estimates
+                    op_filters_to_estimates[op_filter] = estimates
+
+                elif isinstance(logical_op, FilteredScan):
+                    filter_str = logical_op.filter.filterCondition if logical_op.filter.filterCondition is not None else str(logical_op.filter.filterFn)
+                    op_filter = f"(filter == '{str(filter_str)}') & (op_name == 'filter' | op_name == 'p_filter')"
+                    op_df = df.query(op_filter)
+                    if not op_df.empty:
+                        models = (
+                            self._getModels()
+                            if logical_op.filter.filterCondition is not None
+                            else [None]
+                        )
+                        estimates = {model: None for model in models}
+                        for model in models:
+                            model_name = model.value if model is not None else None
+                            est_tokens = StatsProcessor._est_num_input_output_tokens(op_df, model_name=model_name)
+                            model_estimates = {
+                                "time_per_record": StatsProcessor._est_time_per_record(op_df, model_name=model_name),
+                                "cost_per_record": StatsProcessor._est_usd_per_record(op_df, model_name=model_name),
+                                "est_num_input_tokens": est_tokens[0],
+                                "est_num_output_tokens": est_tokens[1],
+                                "selectivity": StatsProcessor._est_selectivity(df, op_df, model_name=model_name),
+                                "quality": StatsProcessor._est_quality(op_df, model_name=model_name),
+                            }
+                            estimates[model_name] = model_estimates
+                    op_filters_to_estimates[op_filter] = estimates
+
+                elif isinstance(logical_op, LimitScan):
+                    op_filter = "(op_name == 'limit')"
+                    op_df = df.query(op_filter)
+                    if not op_df.empty:
+                        estimates = {
+                            "time_per_record": StatsProcessor._est_time_per_record(op_df)
+                        }
+                    op_filters_to_estimates[op_filter] = estimates
+
+                elif isinstance(logical_op, ApplyAggregateFunction) and logical_op.aggregationFunction.funcDesc == "COUNT":
+                    op_filter = "(op_name == 'count')"
+                    op_df = df.query(op_filter)
+                    if not op_df.empty:
+                        estimates = {
+                            "time_per_record": StatsProcessor._est_time_per_record(op_df)
+                        }
+                    op_filters_to_estimates[op_filter] = estimates
+
+                elif isinstance(logical_op, ApplyAggregateFunction) and logical_op.aggregationFunction.funcDesc == "AVERAGE":
+                    op_filter = "(op_name == 'average')"
+                    op_df = df.query(op_filter)
+                    if not op_df.empty:
+                        estimates = {
+                            "time_per_record": StatsProcessor._est_time_per_record(op_df)
+                        }
+                    op_filters_to_estimates[op_filter] = estimates
+
+                logical_op = logical_op.inputOp
+
         # estimate the cost (in terms of USD, latency, throughput, etc.) for each plan
         plans = []
+        cost_est_data = None if op_filters_to_estimates == {} else op_filters_to_estimates
         for physicalPlan in physicalPlans:
-            planCost, fullPlanCostEst = physicalPlan.estimateCost(cost_estimate_sample_data=cost_estimate_sample_data)
+            planCost, fullPlanCostEst = physicalPlan.estimateCost(cost_est_data=cost_est_data)
 
             totalTime = planCost["totalTime"]
             totalCost = planCost["totalUSD"]  # for now, cost == USD
@@ -329,9 +496,16 @@ class LogicalOperator:
         # more efficient algo.'s exist, but they are non-trivial to implement, so for now I'm using
         # brute force; it may ultimately be best to compute a cheap approx. of the pareto front:
         # - e.g.: https://link.springer.com/chapter/10.1007/978-3-642-12002-2_6
-        paretoFrontierPlans = []
+        paretoFrontierPlans, baselinePlans = [], []
         for i, (totalTime_i, totalCost_i, quality_i, plan, fullPlanCostEst) in enumerate(dedup_plans):
             paretoFrontier = True
+
+            # ensure that all baseline plans are included if specified
+            if include_baselines:
+                for baselinePlan in [self._createBaselinePlan(model) for model in self._getModels()]:
+                    if baselinePlan == plan:
+                        baselinePlans.append((totalTime_i, totalCost_i, quality_i, plan, fullPlanCostEst))
+                        continue
 
             # check if any other plan dominates plan i
             for j, (totalTime_j, totalCost_j, quality_j, _, _) in enumerate(dedup_plans):
@@ -348,11 +522,55 @@ class LogicalOperator:
                 paretoFrontierPlans.append((totalTime_i, totalCost_i, quality_i, plan, fullPlanCostEst))
 
         print(f"PARETO PLANS: {len(paretoFrontierPlans)}")
-        if max is not None:
-            paretoFrontierPlans = paretoFrontierPlans[:max]
-            print(f"LIMIT PARETO PLANS: {len(paretoFrontierPlans)}")
+        print(f"BASELINE PLANS: {len(baselinePlans)}")
 
-        return paretoFrontierPlans
+        # if specified, grab up to `min` total plans, and choose the remaining plans
+        # based on their smallest agg. distance to the pareto frontier; distance is computed
+        # by summing the pct. difference to the pareto frontier across each dimension
+        def is_in_final_plans(plan, finalPlans):
+            # determine if this plan is already in the final set of plans
+            for _, _, _, finalPlan, _ in finalPlans:
+                if plan == finalPlan:
+                    return True
+            return False
+
+        finalPlans = paretoFrontierPlans
+        for planInfo in baselinePlans:
+            if is_in_final_plans(planInfo[3], finalPlans):
+                continue
+            else:
+                finalPlans.append(planInfo)
+
+        if min is not None and len(finalPlans) < min:
+            min_distances = []
+            for i, (totalTime, totalCost, quality, plan, fullPlanCostEst) in enumerate(dedup_plans):
+                # determine if this plan is already in the final set of plans
+                if is_in_final_plans(plan, finalPlans):
+                    continue
+
+                # otherwise compute min distance to plans on pareto frontier
+                min_dist, min_dist_idx = np.inf, -1
+                for paretoTime, paretoCost, paretoQuality, _, _ in paretoFrontierPlans:
+                    time_dist = (totalTime - paretoTime) / paretoTime
+                    cost_dist = (totalCost - paretoCost) / paretoCost
+                    quality_dist = (paretoQuality - quality) / quality if quality > 0 else 10.0
+                    dist = time_dist + cost_dist + quality_dist
+                    if dist < min_dist:
+                        min_dist = dist
+                        min_dist_idx = i
+                
+                min_distances.append((min_dist, min_dist_idx))
+            
+            # sort based on distance
+            min_distances = sorted(min_distances, key=lambda tup: tup[0])
+
+            # add closest plans to finalPlans
+            k = min - len(finalPlans)
+            k_indices = list(map(lambda tup: tup[1], min_distances[:k]))
+            for idx in k_indices:
+                finalPlans.append(dedup_plans[idx])
+
+        return finalPlans
 
 
 class ConvertScan(LogicalOperator):
@@ -544,7 +762,7 @@ class GroupByAggregate(LogicalOperator):
     def __str__(self):
         descStr = "Grouping Fields:" 
         return (f"GroupBy({elements.GroupBySig.serialize(self.gbySig)})")
-    
+
     def dumpLogicalTree(self):
         """Return the logical subtree rooted at this operator"""
         return (self, self.inputOp.dumpLogicalTree())

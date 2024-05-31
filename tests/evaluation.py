@@ -90,7 +90,9 @@ class RealEstateListingSource(pz.UserSource):
             dr.listing = root.split("/")[-1]
             dr.image_contents = []
             for file in files:
-                bytes_data = open(os.path.join(root, file), "rb").read()
+                bytes_data = None
+                with open(os.path.join(root, file), "rb") as f:
+                    bytes_data = f.read()
                 if file.endswith('.txt'):
                     dr.text_content = bytes_data.decode("utf-8")
                     # dr.text_content = str(bytes_data)

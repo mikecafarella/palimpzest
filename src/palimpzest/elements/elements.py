@@ -190,9 +190,13 @@ class Schema(metaclass=SchemaMetaclass):
 
     def asJSON(self, value_dict: Dict[str, Any], include_data_cols: bool=True) -> str:
         """Return a JSON representation of an instantiated object of this Schema"""
-        fields = self.__class__.fieldNames()
+        # TODO: rethink relationship between records and schemas
+        # fields = self.__class__.fieldNames()
+
+        # TODO: rethink relationship between records and schemas
         # Make a dictionary out of the key/value pairs
-        d = {k: value_dict[k] for k in fields}
+        d = value_dict
+        # d = {k: value_dict[k] for k in fields}
         if include_data_cols:
             d["data type"] = str(self.__class__.__name__)
             d["data type description"]  = str(self.__class__.__doc__)

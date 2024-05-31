@@ -1,5 +1,5 @@
 from palimpzest.datamanager import DataDirectory
-from palimpzest.constants import PromptStrategy, CodeGenStrategy
+from palimpzest.constants import PromptStrategy, CodeGenStrategy, Model
 from palimpzest.elements import DataRecord
 from palimpzest.generators import DSPyGenerator, ImageTextGenerator
 from palimpzest.profiler import Stats, BondedQueryStats, ConventionalQueryStats, FieldQueryStats, CodeGenEnsembleStats, FullCodeGenStats, GenerationStats
@@ -70,7 +70,11 @@ def _construct_query_prompt(td: TaskDescriptor, doc_type: str, generate_field_na
         Here is every output field name and a description:
         {multilineOutputFieldDescription}
         {appendixInstruction}
-        """ + "" if td.conversionDesc is None else f" Keep in mind that this process is described by this text: {td.conversionDesc}." 
+        """ + "" if td.conversionDesc is None else f" Keep in mind that this process is described by this text: {td.conversionDesc}."
+
+    # TODO: add this for boolean questions?
+    # if td.prompt_strategy == PromptStrategy.DSPY_COT_BOOL:
+    #     promptQuestion += "\nRemember, your output MUST be one of TRUE or FALSE."
 
     return promptQuestion
 
@@ -105,16 +109,21 @@ def _get_JSON_from_answer(answer: str) -> Dict[str, Any]:
     return json.loads(answer)
 
 
-def _create_data_record_from_json(jsonObj: Any, td: TaskDescriptor, candidate: DataRecord) -> DataRecord:
+def _create_data_record_from_json(jsonObj: Any, td: TaskDescriptor, candidate: DataRecord, cardinality_idx: int=None) -> DataRecord:
     # initialize data record
-    dr = DataRecord(td.outputSchema, parent_uuid=candidate._uuid)
+    dr = DataRecord(td.outputSchema, parent_uuid=candidate._uuid, cardinality_idx=cardinality_idx)
 
-    # copy fields from the candidate (input) record if they already exist,
-    # otherwise parse them from the generated jsonObj
-    for field_name in td.outputSchema.fieldNames():
-        if field_name in td.inputSchema.fieldNames():
-            setattr(dr, field_name, getattr(candidate, field_name))
-        else:
+    # get input field names and output field names
+    input_fields = td.inputSchema.fieldNames()
+    output_fields = td.outputSchema.fieldNames()
+
+    # first, copy all fields from input schema
+    for field_name in input_fields:
+        setattr(dr, field_name, getattr(candidate, field_name))
+
+    # parse newly generated fields from the generated jsonObj
+    for field_name in output_fields:
+        if field_name not in input_fields:
             # parse the json object and set the DataRecord's fields with their generated values 
             setattr(dr, field_name, jsonObj.get(field_name, None)) # the use of get prevents a KeyError if an individual field is missing. TODO: is this behavior desired?
 
@@ -143,7 +152,7 @@ def runBondedQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fals
             generate_field_names.append(field_name)
 
     # fetch input information
-    text_content = candidate.asJSON(include_bytes=False)
+    text_content = candidate._asJSON(include_bytes=False)
     doc_schema = str(td.outputSchema)
     doc_type = td.outputSchema.className()
 
@@ -151,12 +160,12 @@ def runBondedQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fals
     promptQuestion = _construct_query_prompt(td, doc_type, generate_field_names)
 
     # generate LLM response and capture statistics
-    answer, bonded_query_stats = None, None
+    answer, new_heatmap_json_obj, bonded_query_stats = None, None, None
     try:
         if td.prompt_strategy == PromptStrategy.DSPY_COT_QA:
             # invoke LLM to generate output JSON
             generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
-            answer, gen_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+            answer, new_heatmap_json_obj, gen_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget, plan_idx=td.plan_idx, heatmap_json_obj=td.heatmap_json_obj)
 
             # construct BondedQueryStats object
             bonded_query_stats = BondedQueryStats(
@@ -200,8 +209,8 @@ def runBondedQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fals
         if td.cardinality == "oneToMany":
             if len(jsonObj["items"]) == 0:
                 raise Exception("No output objects were generated with bonded query - trying with conventional query...")
-            for elt in jsonObj["items"]:
-                dr = _create_data_record_from_json(elt, td, candidate)
+            for idx, elt in enumerate(jsonObj["items"]):
+                dr = _create_data_record_from_json(elt, td, candidate, cardinality_idx=idx)
                 drs.append(dr)
         else:
             dr = _create_data_record_from_json(jsonObj, td, candidate)
@@ -209,9 +218,14 @@ def runBondedQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fals
 
     except Exception as e:
         print(f"Bonded query processing error: {e}")
-        return None, bonded_query_stats, str(e)
+        return None, new_heatmap_json_obj, bonded_query_stats, str(e)
 
-    return drs, bonded_query_stats, None
+    # # TODO: debug root cause
+    # for dr in drs:
+    #     if not hasattr(dr, 'filename'):
+    #         setattr(dr, 'filename', candidate.filename)
+
+    return drs, new_heatmap_json_obj, bonded_query_stats, None
 
 
 def runConventionalQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=False) -> Tuple[DataRecord, Stats]:
@@ -235,7 +249,7 @@ def runConventionalQuery(candidate: DataRecord, td: TaskDescriptor, verbose: boo
             generate_field_names.append(field_name)
 
     # fetch input information
-    text_content = candidate.asJSON(include_bytes=False)
+    text_content = candidate._asJSON(include_bytes=False)
     doc_schema = str(td.outputSchema)
     doc_type = td.outputSchema.className()
 
@@ -265,7 +279,7 @@ def runConventionalQuery(candidate: DataRecord, td: TaskDescriptor, verbose: boo
                 generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
                 answer, record_stats = None, None
                 try:
-                    answer, record_stats = generator.generate(text_content, promptQuestion)
+                    answer, _, record_stats = generator.generate(text_content, promptQuestion, plan_idx=td.plan_idx)
                     jsonObj = _get_JSON_from_answer(answer)["items"][0]
                     query_stats[f"all_fields_one_to_many_conventional_{idx}"] = record_stats
                 except IndexError as e:
@@ -283,7 +297,7 @@ def runConventionalQuery(candidate: DataRecord, td: TaskDescriptor, verbose: boo
                     print(answer)
                     continue
 
-                dr = _create_data_record_from_json(jsonObj, td, candidate)
+                dr = _create_data_record_from_json(jsonObj, td, candidate, cardinality_idx=idx)
                 drs.append(dr)
 
             # TODO how to stat this? I feel that we need a new Stats class for this type of query
@@ -295,6 +309,11 @@ def runConventionalQuery(candidate: DataRecord, td: TaskDescriptor, verbose: boo
                 input_fields=td.inputSchema.fieldNames(),
                 generated_fields=generate_field_names,
             )
+
+            # TODO: debug root cause
+            for dr in drs:
+                if not hasattr(dr, 'filename'):
+                    setattr(dr, 'filename', candidate.filename)
 
             return drs, conventional_query_stats
 
@@ -314,7 +333,7 @@ def runConventionalQuery(candidate: DataRecord, td: TaskDescriptor, verbose: boo
                 # print("---------------")
                 # invoke LLM to generate output JSON
                 generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
-                answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+                answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget, plan_idx=td.plan_idx)
 
             elif td.prompt_strategy == PromptStrategy.IMAGE_TO_TEXT:                               
                 # TODO: this is very hacky; need to come up w/more general solution for multimodal schemas
@@ -357,6 +376,10 @@ def runConventionalQuery(candidate: DataRecord, td: TaskDescriptor, verbose: boo
         generated_fields=generate_field_names,
     )
 
+    # # TODO: debug root cause
+    # if not hasattr(dr, 'filename'):
+    #     setattr(dr, 'filename', candidate.filename)
+
     return dr, conventional_query_stats
 
 
@@ -381,7 +404,7 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
         # TODO here the problem is: which is the 1:N field that we are splitting the output into?
         # do we need to know this to construct the prompt question ?
         # for now, we will just assume there is only one list in the JSON.
-        dct = candidate.asJSON(include_bytes=False, include_data_cols=False)
+        dct = candidate._asJSON(include_bytes=False, include_data_cols=False)
         dct = json.loads(dct)
         split_attribute = [att for att in dct.keys() if type(dct[att]) == list][0]
         n_splits = len(dct[split_attribute])
@@ -392,16 +415,16 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
         full_code_gen_stats, conv_query_stats = FullCodeGenStats(), {}
         for idx in range(n_splits):
             # initialize output data record
-            dr = DataRecord(td.outputSchema, parent_uuid=candidate._uuid)
+            dr = DataRecord(td.outputSchema, parent_uuid=candidate._uuid, cardinality_idx=idx)
 
             cache = DataDirectory().getCacheService()
             for field_name in generate_field_names:
                 code_ensemble_id = "_".join([td.op_id, field_name])
-                cached_code_ensemble_info = cache.getCachedData("codeEnsemble", code_ensemble_id)
+                cached_code_ensemble_info = cache.getCachedData(f"codeEnsemble{td.plan_idx}", code_ensemble_id)
                 if cached_code_ensemble_info is not None:
                     code_ensemble, _ = cached_code_ensemble_info
                     gen_stats = CodeGenEnsembleStats()
-                    examples = cache.getCachedData("codeSamples", code_ensemble_id)
+                    examples = cache.getCachedData(f"codeSamples{td.plan_idx}", code_ensemble_id)
                 else:
                     code_ensemble, gen_stats, examples = dict(), None, list()
 
@@ -414,17 +437,17 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
                 candidate_dicts = []
                 for _idx in range(n_splits):
                     candidate_dict = dict(new_json)
-                    candidate_dict["row"] = dct[split_attribute][_idx] # TODO: hard-coding rows --> row to try to induce single output
+                    candidate_dict[split_attribute] = dct[split_attribute][_idx]
                     candidate_dicts.append(candidate_dict)
 
                 # print(type(candidate_dicts))
                 # print(candidate_dicts)
                 examples.extend(candidate_dicts)
-                cache.putCachedData("codeSamples", code_ensemble_id, examples)
+                cache.putCachedData(f"codeSamples{td.plan_idx}", code_ensemble_id, examples)
                 api = API.from_task_descriptor(td, field_name, input_fields=new_json.keys())
                 if len(code_ensemble)==0 or reGenerationCondition(api, examples=examples):
                     code_ensemble, gen_stats = codeEnsembleGeneration(api, examples=examples, code_num_examples=n_splits)
-                    cache.putCachedData("codeEnsemble", code_ensemble_id, (code_ensemble, gen_stats))
+                    cache.putCachedData(f"codeEnsemble{td.plan_idx}", code_ensemble_id, (code_ensemble, gen_stats))
 
                 for code_name, code in code_ensemble.items():
                     print(f"CODE NAME: {code_name}")
@@ -447,8 +470,8 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
                         # print("---------------")
                         # invoke LLM to generate output JSON
                         text_content = json.dumps(new_json)
-                        generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
-                        answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+                        generator = DSPyGenerator(Model.GPT_3_5.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+                        answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget, plan_idx=td.plan_idx)
 
                         # update conv_query_stats
                         conv_query_stats[f"{field_name}_{idx}_fallback"] = field_stats
@@ -462,17 +485,22 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
                         answer = None
 
                 print(f'SETTING {field_name} to be {answer}')
+<<<<<<< HEAD
                 if type(answer) == type([]) and len(answer) == 1:
                     answer = answer[0]
                 elif type(answer) == type([]) and len(answer) > 1:
                     import pdb
                     pdb.set_trace()
+=======
+                while type(answer) == type([]):
+                    answer = answer[0]
+>>>>>>> 46e53addc8b9a5e6e7177982619dbbe24894b04b
                 setattr(dr, field_name, answer)
                 
-            # TODO: last minute hack; for some reason some records are not setting a filename
-            # I will need to debug this more thoroughly in the future, but for now this is an easy fix
-            if not hasattr(dr, 'filename'):
-                setattr(dr, 'filename', candidate.filename)
+            # # TODO: last minute hack for Biofabric; for some reason some records are not setting a filename
+            # # I will need to debug this more thoroughly in the future, but for now this is an easy fix
+            # if not hasattr(dr, 'filename'):
+            #     setattr(dr, 'filename', candidate.filename)
 
             drs.append(dr)
         
@@ -487,6 +515,11 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
             generated_fields=generate_field_names,
         )
 
+        # TODO: debug root cause
+        for dr in drs:
+            if not hasattr(dr, 'filename'):
+                setattr(dr, 'filename', candidate.filename)
+
         return drs, full_code_gen_stats, conventional_query_stats
 
     else:
@@ -494,24 +527,25 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
         cache = DataDirectory().getCacheService()
         for field_name in generate_field_names:
             code_ensemble_id = "_".join([td.op_id, field_name])
-            cached_code_ensemble_info = cache.getCachedData("codeEnsemble", code_ensemble_id)
+            cached_code_ensemble_info = cache.getCachedData(f"codeEnsemble{td.plan_idx}", code_ensemble_id)
             if cached_code_ensemble_info is not None:
                 code_ensemble, _ = cached_code_ensemble_info
                 gen_stats = CodeGenEnsembleStats()
-                examples = cache.getCachedData("codeSamples", code_ensemble_id)
+                examples = cache.getCachedData(f"codeSamples{td.plan_idx}", code_ensemble_id)
             else:
                 code_ensemble, gen_stats, examples = dict(), None, list()
 
             # remove bytes data from candidate
-            candidate_dict = candidate.asJSON(include_bytes=False, include_data_cols=False)
+            candidate_dict = candidate._asJSON(include_bytes=False, include_data_cols=False)
+            candidate_dict = json.loads(candidate_dict)
             candidate_dict = {k: v for k, v in candidate_dict.items() if v != "<bytes>"}
 
             examples.append(candidate_dict)
-            cache.putCachedData("codeSamples", code_ensemble_id, examples)
+            cache.putCachedData(f"codeSamples{td.plan_idx}", code_ensemble_id, examples)
             api = API.from_task_descriptor(td, field_name, input_fields=candidate_dict.keys())
             if len(code_ensemble)==0 or reGenerationCondition(api, examples=examples):
                 code_ensemble, gen_stats = codeEnsembleGeneration(api, examples=examples)
-                cache.putCachedData("codeEnsemble", code_ensemble_id, (code_ensemble, gen_stats))
+                cache.putCachedData(f"codeEnsemble{td.plan_idx}", code_ensemble_id, (code_ensemble, gen_stats))
 
             for code_name, code in code_ensemble.items():
                 print(f"CODE NAME: {code_name}")
@@ -534,8 +568,8 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
                     # print("---------------")
                     # invoke LLM to generate output JSON
                     text_content = json.loads(candidate_dict)
-                    generator = DSPyGenerator(td.model.value, td.prompt_strategy, doc_schema, doc_type, verbose)
-                    answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget)
+                    generator = DSPyGenerator(Model.GPT_3_5.value, td.prompt_strategy, doc_schema, doc_type, verbose)
+                    answer, field_stats = generator.generate(text_content, promptQuestion, budget=td.token_budget, plan_idx=td.plan_idx)
 
                     # update stats
                     conv_query_stats[f"{field_name}_fallback"] = field_stats
@@ -551,10 +585,10 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
             print(f'SETTING {field_name} to be {answer}')
             setattr(dr, field_name, answer)
 
-        # TODO: last minute hack; for some reason some records are not setting a filename
-        # I will need to debug this more thoroughly in the future, but for now this is an easy fix
-        if not hasattr(dr, 'filename'):
-            setattr(dr, 'filename', candidate.filename)
+        # # TODO: last minute hack for Biofabric; for some reason some records are not setting a filename
+        # # I will need to debug this more thoroughly in the future, but for now this is an easy fix
+        # if not hasattr(dr, 'filename'):
+        #     setattr(dr, 'filename', candidate.filename)
         
         # construct ConventionalQueryStats object
         field_query_stats_lst = [
@@ -566,5 +600,9 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
             input_fields=td.inputSchema.fieldNames(),
             generated_fields=generate_field_names,
         )
+
+        # TODO: debug root cause
+        if not hasattr(dr, 'filename'):
+            setattr(dr, 'filename', candidate.filename)
 
         return dr, full_code_gen_stats, conventional_query_stats

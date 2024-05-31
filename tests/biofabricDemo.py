@@ -84,9 +84,9 @@ def matching(input_dataset, policy):
     
     output_rows = []
     for output_table in matched_tables:
-        # print([k+":"+str(v)+"\n" for k,v in output_table.asDict().items()])
+        # print([k+":"+str(v)+"\n" for k,v in output_table._asDict().items()])
         # print("------------------------------")
-        output_rows.append(output_table.asDict()) 
+        output_rows.append(output_table._asDict()) 
 
     output_df = pd.DataFrame(output_rows)
     return output_df, matched_tables
@@ -185,7 +185,7 @@ if __name__ == "__main__":
         
         output_rows = []
         for output_table in output_2:
-            output_rows.append(output_table.asDict()) 
+            output_rows.append(output_table._asDict()) 
         output_df = pd.DataFrame(output_rows)
 
         output_df.to_csv(out_path+"matched_endtoend.csv", index=False)

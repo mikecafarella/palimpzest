@@ -37,5 +37,5 @@ class Filter():
         return (
             isinstance(other, Filter)
             and self.filterCondition == other.filterCondition
-            and self.FilterFn == other.filterFn
+            and self.filterFn == other.filterFn
         )

@@ -30,6 +30,170 @@ class MaxQuality(Policy):
         return sorted(candidatePlans, key=lambda cp: cp[2])[-1]
 
 
+class MaxQualityAtFixedCost(Policy):
+    def __init__(self, fixed_cost: float):
+        self.fixed_cost = fixed_cost
+
+    def __str__(self):
+        return "MaxQuality@MinCost"
+
+    def choose(self, candidatePlans: List[PhysicalPlan], return_idx: bool=False) -> Union[PhysicalPlan, Tuple[PhysicalPlan, int]]:
+        best_plan, best_plan_idx, max_quality, max_quality_runtime = None, -1, 0, np.inf
+        for idx, plan in enumerate(candidatePlans):
+            # if plan is too expensive, skip
+            if plan[1] > self.fixed_cost:
+                continue
+
+            # if plan is above best current max quality, this is new best plan
+            if plan[2] > max_quality:
+                best_plan = plan
+                best_plan_idx = idx
+                max_quality = plan[2]
+                max_quality_runtime = plan[0]
+
+            # if plan is tied w/current max quality -- and has lower runtime -- this is new best plan
+            elif plan[2] == max_quality and plan[0] < max_quality_runtime:
+                best_plan = plan
+                best_plan_idx = idx
+                max_quality = plan[2]
+                max_quality_runtime = plan[0]
+        
+        # if no plan was below fixed cost; return cheapest plan
+        if best_plan is None:
+            print("NO PLAN FOUND BELOW FIXED COST; PICKING MIN. COST PLAN INSTEAD")
+            min_cost = np.inf
+            for idx, plan in enumerate(candidatePlans):
+                if plan[1] < min_cost:
+                    best_plan = plan
+                    best_plan_idx = idx
+                    min_cost = plan[1]
+
+        return best_plan if not return_idx else (best_plan, best_plan_idx)
+
+
+class MaxQualityAtFixedRuntime(Policy):
+    def __init__(self, fixed_runtime: float):
+        self.fixed_runtime = fixed_runtime
+
+    def __str__(self):
+        return "MaxQuality@MinRuntime"
+
+    def choose(self, candidatePlans: List[PhysicalPlan], return_idx: bool=False) -> Union[PhysicalPlan, Tuple[PhysicalPlan, int]]:
+        best_plan, best_plan_idx, max_quality, max_quality_cost = None, -1, 0, np.inf
+        for idx, plan in enumerate(candidatePlans):
+            # if plan is too long, skip
+            if plan[0] > self.fixed_runtime:
+                continue
+
+            # if plan is above best current max quality, this is new best plan
+            if plan[2] > max_quality:
+                best_plan = plan
+                best_plan_idx = idx
+                max_quality = plan[2]
+                max_quality_cost = plan[1]
+
+            # if plan is tied w/current max quality -- and has lower cost -- this is new best plan
+            elif plan[2] == max_quality and plan[1] < max_quality_cost:
+                best_plan = plan
+                best_plan_idx = idx
+                max_quality = plan[2]
+                max_quality_cost = plan[1]
+        
+        # if no plan was below fixed runtime; return shortest plan
+        if best_plan is None:
+            print("NO PLAN FOUND BELOW FIXED COST; PICKING MIN. RUNTIME PLAN INSTEAD")
+            min_runtime = np.inf
+            for idx, plan in enumerate(candidatePlans):
+                if plan[0] < min_runtime:
+                    best_plan = plan
+                    best_plan_idx = idx
+                    min_runtime = plan[0]
+
+        return best_plan if not return_idx else (best_plan, best_plan_idx)
+
+
+class MinCostAtFixedQuality(Policy):
+    def __init__(self, fixed_quality: float):
+        self.fixed_quality = fixed_quality
+
+    def __str__(self):
+        return "MinCost@FixedQuality"
+
+    def choose(self, candidatePlans: List[PhysicalPlan], return_idx: bool=False) -> Union[PhysicalPlan, Tuple[PhysicalPlan, int]]:
+        best_plan, best_plan_idx, min_cost, min_cost_runtime = None, -1, np.inf, np.inf
+        for idx, plan in enumerate(candidatePlans):
+            # if plan is too low quality, skip
+            if plan[2] < self.fixed_quality:
+                continue
+
+            # if plan is below best current min cost, this is new best plan
+            if plan[1] < min_cost:
+                best_plan = plan
+                best_plan_idx = idx
+                min_cost = plan[1]
+                min_cost_runtime = plan[0]
+
+            # if plan is tied w/current min cost -- and has lower runtime -- this is new best plan
+            elif plan[1] == min_cost and plan[0] < min_cost_runtime:
+                best_plan = plan
+                best_plan_idx = idx
+                min_cost = plan[1]
+                min_cost_runtime = plan[0]
+
+        # if no plan was above fixed quality; return best plan
+        if best_plan is None:
+            print("NO PLAN FOUND ABOVE FIXED QUALITY; PICKING MAX. QUALITY PLAN INSTEAD")
+            max_quality = 0
+            for idx, plan in enumerate(candidatePlans):
+                if plan[2] > max_quality:
+                    best_plan = plan
+                    best_plan_idx = idx
+                    max_quality = plan[2]
+
+        return best_plan if not return_idx else (best_plan, best_plan_idx)
+
+
+class MinRuntimeAtFixedQuality(Policy):
+    def __init__(self, fixed_quality: float):
+        self.fixed_quality = fixed_quality
+
+    def __str__(self):
+        return "MinRuntime@FixedQuality"
+
+    def choose(self, candidatePlans: List[PhysicalPlan], return_idx: bool=False) -> Union[PhysicalPlan, Tuple[PhysicalPlan, int]]:
+        best_plan, best_plan_idx, min_runtime, min_runtime_cost = None, -1, np.inf, np.inf
+        for idx, plan in enumerate(candidatePlans):
+            # if plan is too low quality, skip
+            if plan[2] < self.fixed_quality:
+                continue
+
+            # if plan is below best current min cost, this is new best plan
+            if plan[0] < min_runtime:
+                best_plan = plan
+                best_plan_idx = idx
+                min_runtime = plan[0]
+                min_runtime_cost = plan[1]
+
+            # if plan is tied w/current min runtime -- and has lower cost -- this is new best plan
+            elif plan[0] == min_runtime and plan[1] < min_runtime_cost:
+                best_plan = plan
+                best_plan_idx = idx
+                min_runtime = plan[0]
+                min_runtime_cost = plan[1]
+
+        # if no plan was above fixed quality; return best plan
+        if best_plan is None:
+            print("NO PLAN FOUND ABOVE FIXED QUALITY; PICKING MAX. QUALITY PLAN INSTEAD")
+            max_quality = 0
+            for idx, plan in enumerate(candidatePlans):
+                if plan[2] > max_quality:
+                    best_plan = plan
+                    best_plan_idx = idx
+                    max_quality = plan[2]
+
+        return best_plan if not return_idx else (best_plan, best_plan_idx)
+
+
 class MaxQualityMinRuntime(Policy):
     """
     This policy selects the plan with the maximum quality along the

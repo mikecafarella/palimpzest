@@ -78,7 +78,7 @@ def downloadVLDBPapers(vldbListingPageURLsId, outputDir, shouldProfile=False):
         writer = csv.DictWriter(csvfile, fieldnames=listingRecords[0].__dict__.keys())
         writer.writeheader()
         for record in listingRecords:
-            writer.writerow(record.asDict())
+            writer.writerow(record._asDict())
 
     # if profiling was turned on; capture statistics
     if shouldProfile:

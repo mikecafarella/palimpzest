@@ -75,7 +75,7 @@ class Solver:
             if shouldProfile:
                 candidate._stats[td.op_id] = InduceNonLLMStats()
 
-            return [dr]
+            return [dr], None
         return _simpleTypeConversionFn
 
 
@@ -116,7 +116,7 @@ class Solver:
                 # if profiling, set record's stats for the given op_id
                 if shouldProfile:
                     dr._stats[td.op_id] = InduceNonLLMStats(api_stats=api_stats)
-                return [dr]
+                return [dr], None
             return _fileToPDF
 
         elif td.outputSchema == TextFile and td.inputSchema == File:
@@ -130,7 +130,7 @@ class Solver:
                 # if profiling, set record's stats for the given op_id to be an empty Stats object
                 if shouldProfile:
                     candidate._stats[td.op_id] = InduceNonLLMStats()
-                return [dr]
+                return [dr], None
             return _fileToText
 
         elif td.outputSchema == EquationImage and td.inputSchema == ImageFile:
@@ -147,7 +147,7 @@ class Solver:
                 # if profiling, set record's stats for the given op_id
                 if shouldProfile:
                     dr._stats[td.op_id] = InduceNonLLMStats(api_stats=api_stats)
-                return [dr]
+                return [dr], None
             return _imageToEquation
 
         elif td.outputSchema == File and td.inputSchema == Download: # TODO make sure this is also true for children classes of File
@@ -160,7 +160,7 @@ class Solver:
                 dr.contents = candidate.content
                 if shouldProfile:
                     candidate._stats[td.op_id] = InduceNonLLMStats()
-                return [dr]
+                return [dr], None
             return _downloadToFile
 
         elif td.outputSchema == XLSFile and td.inputSchema == File:
@@ -180,7 +180,7 @@ class Solver:
 
                 if shouldProfile:
                     candidate._stats[td.op_id] = InduceNonLLMStats(api_stats=api_stats)
-                return [dr]
+                return [dr], None
             return _fileToXLS
 
         elif td.outputSchema == Table and td.inputSchema == XLSFile:
@@ -210,7 +210,7 @@ class Solver:
                     if shouldProfile:
                         dr._stats[td.op_id] = InduceNonLLMStats(api_stats=api_stats)
                     records.append(dr)
-                return records
+                return records, None
             return _excelToTable
 
         else:
@@ -234,10 +234,10 @@ class Solver:
                         conventional_query_stats=conventional_query_stats,
                     )
 
-                return [dr]
+                return [dr], None
 
             elif td.query_strategy == QueryStrategy.BONDED:
-                drs, bonded_query_stats, err_msg = runBondedQuery(candidate, td, self._verbose)
+                drs, new_heatmap_obj, bonded_query_stats, err_msg = runBondedQuery(candidate, td, self._verbose)
 
                 # if bonded query failed, manually set fields to None
                 if err_msg is not None:
@@ -256,10 +256,10 @@ class Solver:
                             bonded_query_stats=bonded_query_stats,
                         )
 
-                return drs
+                return drs, new_heatmap_obj
 
             elif td.query_strategy == QueryStrategy.BONDED_WITH_FALLBACK:
-                drs, bonded_query_stats, err_msg = runBondedQuery(candidate, td, self._verbose)
+                drs, new_heatmap_obj, bonded_query_stats, err_msg = runBondedQuery(candidate, td, self._verbose)
 
                 # if bonded query failed, run conventional query
                 if err_msg is not None:
@@ -270,7 +270,7 @@ class Solver:
                 # if profiling, set record's stats for the given op_id
                 if shouldProfile:
                     for dr in drs:
-                        # TODO: conventional doesn't capture stats for one-to-many cardinality
+                        # TODO: divide bonded query_stats time, cost, and input/output tokens by len(drs)
                         dr._stats[td.op_id] = InduceLLMStats(
                             query_strategy=td.query_strategy.value,
                             token_budget=td.token_budget,
@@ -278,8 +278,8 @@ class Solver:
                             conventional_query_stats=conventional_query_stats,
                         )
 
-                return drs
-            
+                return drs, new_heatmap_obj
+
             elif td.query_strategy == QueryStrategy.CODE_GEN:
                 dr, full_code_gen_stats = runCodeGenQuery(candidate, td, self._verbose)
                 drs = [dr]
@@ -293,7 +293,7 @@ class Solver:
                             full_code_gen_stats=full_code_gen_stats,
                         )
 
-                return drs
+                return drs, None
 
             elif td.query_strategy == QueryStrategy.CODE_GEN_WITH_FALLBACK:
                 # similar to in _makeLLMTypeConversionFn; maybe we can have one strategy in which we try
@@ -314,7 +314,7 @@ class Solver:
                 # if profiling, set record's stats for the given op_id
                 if shouldProfile:
                     for dr in drs:
-                        # TODO: conventional doesn't capture stats for one-to-many cardinality
+                        # TODO: divide bonded query_stats time, cost, and input/output tokens by len(drs)
                         dr._stats[td.op_id] = InduceLLMStats(
                             query_strategy=td.query_strategy.value,
                             token_budget=td.token_budget,
@@ -322,7 +322,7 @@ class Solver:
                             conventional_query_stats=conventional_query_stats,
                         )
 
-                return drs
+                return drs, None
 
             else:
                 raise ValueError(f"Unrecognized QueryStrategy: {td.query_strategy.value}")
@@ -377,9 +377,9 @@ class Solver:
                 raise Exception("not implemented yet")
 
             # invoke LLM to generate filter decision (True or False)
-            text_content = candidate.asJSON(include_bytes=False)
+            text_content = candidate._asJSON(include_bytes=False)
             try:
-                response, gen_stats = generator.generate(context=text_content, question=td.filter.filterCondition)
+                response, _, gen_stats = generator.generate(context=text_content, question=td.filter.filterCondition, plan_idx=td.plan_idx)
 
                 # if profiling, set record's stats for the given op_id
                 if shouldProfile:

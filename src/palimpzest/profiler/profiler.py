@@ -83,14 +83,13 @@ class Profiler:
                     self.operator_stats.total_cumulative_iter_time += t_record_end - t_record_start
 
                     # update state of record for complete history of computation
-                    if 'filename' not in record.__dict__.keys():
-                        import pdb
-                        pdb.set_trace()
-                    record_state = record.asDict(include_bytes=False)
+                    record_state = record._asDict(include_bytes=False)
                     record_state["op_id"] = self.op_id
                     record_state["uuid"] = record._uuid
                     record_state["parent_uuid"] = record._parent_uuid
                     record_state["stats"] = record._stats[self.op_id]
+                    if hasattr(record, '_passed_filter') and "filter" in name:
+                        record_state["_passed_filter"] = record._passed_filter
 
                     # add record state to set of records computed by this operator
                     self.operator_stats.records.append(record_state)
