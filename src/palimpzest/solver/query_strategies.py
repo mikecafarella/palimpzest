@@ -462,9 +462,9 @@ def runCodeGenQuery(candidate: DataRecord, td: TaskDescriptor, verbose: bool=Fal
                         answer = None
 
                 print(f'SETTING {field_name} to be {answer}')
-                if type(answer) == list and len(answer) == 1:
+                if type(answer) == type([]) and len(answer) == 1:
                     answer = answer[0]
-                elif type(answer) == list and len(answer) > 1:
+                elif type(answer) == type([]) and len(answer) > 1:
                     import pdb
                     pdb.set_trace()
                 setattr(dr, field_name, answer)

@@ -97,7 +97,7 @@ if __name__ == "__main__":
     parser.add_argument('--no-cache', action='store_true', help='Do not use cached results')
     parser.add_argument('--verbose', action='store_true', help='Do not use cached results', default=True)
     parser.add_argument('--from_xls', action='store_true', help='Start from pre-downloaded excel files', default=False)
-    parser.add_argument('--experiment', type=str, help='The experiment to run', default='matching')
+    parser.add_argument('--experiment', type=str, help='The experiment to run', default='test-collection')
     parser.add_argument('--policy', type=str, help='The policy to use', default='cost')
 
     args = parser.parse_args()
@@ -129,6 +129,18 @@ if __name__ == "__main__":
         binary_tables = tableURLS.map(pz.DownloadBinaryFunction())
         tables = binary_tables.convert(pz.File)
         xls = tables.convert(pz.XLSFile)
+
+    elif experiment == 'test-collection':
+        print("Running test collection")
+        papers = pz.Dataset("biofabric-pdf", schema=ScientificPaper)
+        paperURLs = papers.convert(pz.URL, desc="The DOI url of the paper") 
+        # TODO this fetch should be refined to work for all papers
+        htmlDOI = paperURLs.map(pz.DownloadHTMLFunction())
+        tableURLS = htmlDOI.convert(pz.URL, desc="The URLs of the XLS tables from the page", cardinality="oneToMany")
+
+        output_1 = pz.SimpleExecution(tableURLS, policy)
+        output_1 = output_1.executeAndOptimize(args.verbose)
+
 
 
     elif experiment == 'filtering':

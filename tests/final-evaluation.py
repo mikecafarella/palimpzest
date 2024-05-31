@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from palimpzest.profiler import Profiler, StatsProcessor
 import palimpzest as pz
+import context 
 
 from palimpzest.execution import graphicEmit, flatten_nested_tuples
 from palimpzest.operators import InduceFromCandidateOp
